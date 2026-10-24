@@ -5129,6 +5129,9 @@ pub async fn apply_add_gil(
     match db.add_gil(actor_id, amount).await {
         Ok(total) => {
             tracing::info!(actor = actor_id, delta = amount, total, "AddGil applied",);
+            if let Some(handle) = registry.get(actor_id).await {
+                handle.character.write().await.chara.gil = total;
+            }
             if let Some(world) = world {
                 send_gil_update(actor_id, amount, registry, world, db).await;
             }
