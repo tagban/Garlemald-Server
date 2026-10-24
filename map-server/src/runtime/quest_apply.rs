@@ -6395,6 +6395,7 @@ pub async fn apply_quest_on_notice(
             mp: c.chara.mp,
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
+            current_gil: c.chara.gil.max(0) as u32,
             active_quests: c
                 .quest_journal
                 .slots
@@ -6966,6 +6967,7 @@ async fn fire_quest_npc_hook_via_command(
             mp: c.chara.mp,
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
+            current_gil: c.chara.gil.max(0) as u32,
             active_quests: c
                 .quest_journal
                 .slots
@@ -7186,6 +7188,7 @@ pub async fn fire_quest_on_talk_via_command(
             mp: c.chara.mp,
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
+            current_gil: c.chara.gil.max(0) as u32,
             active_quests: c
                 .quest_journal
                 .slots
@@ -7382,6 +7385,7 @@ async fn fire_quest_hook(
             mp: c.chara.mp,
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
+            current_gil: c.chara.gil.max(0) as u32,
             active_quests: c
                 .quest_journal
                 .slots
