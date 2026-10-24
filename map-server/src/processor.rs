@@ -68,8 +68,9 @@ fn extract_null_terminated_ascii(bytes: &[u8]) -> String {
 
 /// EventStarts that arrived while the same owner's push event was parked, by
 /// player actor id (see `handle_event_start`).
-static QUEUED_EVENT_STARTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, Vec<u8>>>> =
-    std::sync::LazyLock::new(Default::default);
+static QUEUED_EVENT_STARTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u32, Vec<u8>>>,
+> = std::sync::LazyLock::new(Default::default);
 
 pub struct PacketProcessor {
     pub db: Arc<Database>,
@@ -7758,9 +7759,15 @@ impl PacketProcessor {
         if still_parked {
             return Ok(());
         }
-        let queued = QUEUED_EVENT_STARTS.lock().ok().and_then(|mut q| q.remove(&actor_id));
+        let queued = QUEUED_EVENT_STARTS
+            .lock()
+            .ok()
+            .and_then(|mut q| q.remove(&actor_id));
         if let Some(data) = queued {
-            tracing::debug!(player = actor_id, "replaying the EventStart queued during the push event");
+            tracing::debug!(
+                player = actor_id,
+                "replaying the EventStart queued during the push event"
+            );
             Box::pin(self.handle_event_start(session_id, &data)).await?;
         }
         Ok(())
@@ -7865,7 +7872,10 @@ impl PacketProcessor {
             if parked_owner == Some(owner_actor_id) {
                 let (cur_name, cur_type) = {
                     let c = handle.character.read().await;
-                    (c.event_session.current_event_name.clone(), c.event_session.current_event_type)
+                    (
+                        c.event_session.current_event_name.clone(),
+                        c.event_session.current_event_type,
+                    )
                 };
                 if cur_type == 2 && !cur_name.is_empty() && cur_name != pkt.event_name {
                     tracing::debug!(
