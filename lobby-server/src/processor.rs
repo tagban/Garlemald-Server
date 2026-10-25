@@ -111,7 +111,7 @@ pub enum Reply {
 
 pub struct PacketProcessor {
     db: Database,
-    /// Character-select world list, loaded once from `configs/servers.toml`
+    /// Character-select world list, loaded once from the settings (`servers`)
     /// at startup (issue #11) — deployment config, not database state.
     worlds: Vec<World>,
 }

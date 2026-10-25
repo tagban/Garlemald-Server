@@ -68,7 +68,7 @@ default) and `map-server` additionally loads the **shared Lua script root**
   └─────────────┘
 ```
 
-The four ports above are the **localhost defaults** in `configs/*.toml`; every
+The four ports above are the **localhost defaults** in `settings/default/*.toml`; every
 one is overridable. The exact handoff steps are detailed in
 [Inter-server communication](#inter-server-communication) below.
 
@@ -90,7 +90,7 @@ touches.
   login/signup the server mints a **56-character hex session token** and writes
   a `sessions` row, then redirects to `ffxiv://login_success?sessionId=<token>`
   (HTTP 303). The token's lifetime is the `[session].hours` value in
-  `configs/web.toml` (default 24h); the lobby later rejects rows whose
+  `settings/default/web.toml` (default 24h); the lobby later rejects rows whose
   `expiration` is in the past.
 - **Shared state** is an `AppState { db: Arc<Database>, session_hours }` handed
   to axum via `.with_state(...)`.
@@ -110,7 +110,7 @@ Anchors: `lobby-server/src/{processor.rs,database.rs,character_creator.rs,hardco
   `0x05` session-acknowledge, `0x0B` modify-character.
 - **`database.rs`** runs the lobby's SQLite queries: resolve a user id from a
   session token and list characters/retainers/reserved names. The destination
-  world list itself is config, not DB — `configs/servers.toml`, loaded at
+  world list itself is config, not DB — `settings/default/servers.toml`, loaded at
   startup (`common::server_list`).
 - **`character_creator.rs`** holds the per-class starting equipment layout used
   during character creation.
@@ -215,7 +215,7 @@ client where to connect next:
 3. **Character list & select.** The client requests its characters (opcode
    `0x03`); the lobby returns chunked world/account/retainer/character list
    packets. On select (opcode `0x04`), the lobby looks up the character's world
-   in the server list (`configs/servers.toml`) and replies with a confirm
+   in the server list (`settings/default/servers.toml`) and replies with a confirm
    packet (opcode `0x0F`)
    **embedding the world server's IP and port** plus the session token.
 4. **World connect** (`world-server` :54992). The client opens a new TCP

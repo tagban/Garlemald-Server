@@ -92,8 +92,8 @@ pub async fn run() -> Result<()> {
     // In smoke mode we never reach the accept loop, so also skip the stdin
     // reader that would otherwise sit blocked on `--smoke` runs.
     let no_console = args.no_console || smoke;
-    tracing::debug!(config_path = %args.config, "loading config");
-    let mut config = match Config::load(&args.config) {
+    tracing::debug!(config_override = ?args.config, "loading settings");
+    let mut config = match Config::load(args.config.as_deref()) {
         Ok(cfg) => cfg,
         Err(e) => {
             if smoke {

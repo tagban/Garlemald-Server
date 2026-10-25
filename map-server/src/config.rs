@@ -19,7 +19,7 @@
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use serde::Deserialize;
 
@@ -130,17 +130,10 @@ impl Config {
         self.server.world_id
     }
 
-    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        if !path.exists() {
-            tracing::warn!(?path, "map config not found, using defaults");
-            return Ok(Self::default());
-        }
-        let raw =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let cfg: Config =
-            toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
-        Ok(cfg)
+    /// `settings/default/map.toml` with the operator's overrides over it
+    /// (`override_path`, else `settings/map.toml`): see `common::settings`.
+    pub fn load(override_path: Option<&Path>) -> Result<Self> {
+        common::settings::load("map", override_path)
     }
 
     pub fn apply_launch_args(&mut self, args: LaunchArgs) {
@@ -179,6 +172,8 @@ pub struct LaunchArgs {
     /// Suppress the interactive stdin console reader.
     #[arg(long = "no-console")]
     pub no_console: bool,
-    #[arg(long, default_value = "./configs/map.toml")]
-    pub config: String,
+    /// Override file merged over settings/default/map.toml (default:
+    /// settings/map.toml)
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 }

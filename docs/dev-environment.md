@@ -74,10 +74,10 @@ Each binary takes `--config <path>`:
 
 ```sh
 cargo build --release --workspace
-./target/release/web-server   --config ./configs/web.toml
-./target/release/lobby-server --config ./configs/lobby.toml
-./target/release/world-server --config ./configs/world.toml
-./target/release/map-server   --config ./configs/map.toml
+./target/release/web-server   
+./target/release/lobby-server 
+./target/release/world-server 
+./target/release/map-server   
 ```
 
 ### Ports and configs
@@ -87,13 +87,13 @@ to change ports/binds; the comments in each file document its keys.
 
 | Service        | Config                | Default bind        | Config notes                                    |
 |----------------|-----------------------|---------------------|-------------------------------------------------|
-| `web-server`   | `configs/web.toml`    | `127.0.0.1:54993`   | `[session].hours` = token lifetime (default 24) |
-| `lobby-server` | `configs/lobby.toml`  | `127.0.0.1:54994`   | `[database].path` shared with the others        |
-| `world-server` | `configs/world.toml`  | `127.0.0.1:54992`   | `[server].world_id` keys `configs/servers.toml` |
-| `map-server`   | `configs/map.toml`    | `127.0.0.1:1989`    | `[scripting].script_root`, `load_from_database` |
+| `web-server`   | `settings/default/web.toml`    | `127.0.0.1:54993`   | `[session].hours` = token lifetime (default 24) |
+| `lobby-server` | `settings/default/lobby.toml`  | `127.0.0.1:54994`   | `[database].path` shared with the others        |
+| `world-server` | `settings/default/world.toml`  | `127.0.0.1:54992`   | `[server].world_id` keys `settings/default/servers.toml` |
+| `map-server`   | `settings/default/map.toml`    | `127.0.0.1:1989`    | `[scripting].script_root`, `load_from_database` |
 
 The world list shown at character select (name, advertised address/port,
-active flag) is deployment config too: `configs/servers.toml`, read by
+active flag) is deployment config too: `settings/default/servers.toml`, read by
 lobby-server and world-server. Renaming a world or repointing its address is
 a text edit + restart — no DB access. If the file is missing, both fall back
 to the built-in one-box localhost world.

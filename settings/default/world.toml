@@ -1,0 +1,13 @@
+# XIVLegacy Server: world, shipped defaults.
+# Don't edit this file: put what differs in settings/world.toml (see settings/README.md).
+
+[server]
+bind_ip = "127.0.0.1"
+port = 54992
+show_timestamp = true
+# Entry id in the server list (settings: servers.toml) — it ships with
+# id=1 "Fernehalwes" so this matches out of the box.
+world_id = 1
+
+[database]
+path = "./data/garlemald.db"

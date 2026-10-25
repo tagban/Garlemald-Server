@@ -19,7 +19,7 @@
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use serde::Deserialize;
 
@@ -83,7 +83,7 @@ impl Default for DatabaseSection {
 impl Default for ServersSection {
     fn default() -> Self {
         Self {
-            path: PathBuf::from("./configs/servers.toml"),
+            path: PathBuf::new(),
         }
     }
 }
@@ -98,21 +98,16 @@ impl Config {
     pub fn db_path(&self) -> &Path {
         &self.database.path
     }
-    pub fn servers_path(&self) -> &Path {
-        &self.servers.path
+    /// A server list file to use over the defaults instead of
+    /// settings/servers.toml (`[servers] path`; unset: None).
+    pub fn servers_path(&self) -> Option<&Path> {
+        (!self.servers.path.as_os_str().is_empty()).then_some(self.servers.path.as_path())
     }
 
-    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        if !path.exists() {
-            tracing::warn!(?path, "lobby config not found, using defaults");
-            return Ok(Self::default());
-        }
-        let raw =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let cfg: Config =
-            toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
-        Ok(cfg)
+    /// `settings/default/lobby.toml` with the operator's overrides over it
+    /// (`override_path`, else `settings/lobby.toml`): see `common::settings`.
+    pub fn load(override_path: Option<&Path>) -> Result<Self> {
+        common::settings::load("lobby", override_path)
     }
 
     pub fn apply_launch_args(&mut self, args: LaunchArgs) {
@@ -151,7 +146,8 @@ pub struct LaunchArgs {
     /// Suppress the interactive stdin console (no-op on servers without one).
     #[arg(long = "no-console")]
     pub no_console: bool,
-    /// Path to the lobby TOML config
-    #[arg(long, default_value = "./configs/lobby.toml")]
-    pub config: String,
+    /// Override file merged over settings/default/lobby.toml (default:
+    /// settings/lobby.toml)
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 }

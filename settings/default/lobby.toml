@@ -1,0 +1,12 @@
+# XIVLegacy Server: lobby (character list and world hand-off), shipped defaults.
+# Don't edit this file: put what differs in settings/lobby.toml (see settings/README.md).
+
+[server]
+bind_ip = "127.0.0.1"
+port = 54994
+show_timestamp = true
+
+[database]
+# Shared SQLite file used by all three servers. Created (with schema) on
+# first run if missing.
+path = "./data/garlemald.db"

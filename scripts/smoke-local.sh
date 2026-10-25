@@ -39,7 +39,7 @@ FAILURES=0
 
 for name in "${SERVICES[@]}"; do
     bin="$BIN_DIR/${name}-server"
-    cfg="$REPO_ROOT/configs/${name}.toml"
+    cfg="$REPO_ROOT/settings/default/${name}.toml"
     db="$TMP_DIR/${name}.db"
 
     if [ ! -x "$bin" ]; then

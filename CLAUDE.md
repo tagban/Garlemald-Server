@@ -36,7 +36,7 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-Each binary also runs standalone: `./target/release/<name> --config configs/<name>.toml`.
+Each binary also runs standalone: `./target/release/<name> (settings: settings/default/<name>.toml, overrides in settings/<name>.toml)`.
 Ports (localhost defaults): web **54993**, lobby **54994**, world **54992**, map
 **1989**. Full detail: [`docs/dev-environment.md`](docs/dev-environment.md).
 
