@@ -489,10 +489,21 @@ pub fn build_retainer_spawn_bundle(
 
 /// Radius (yalms) of the continuous actor-streaming scan around the
 /// player. pmeteor `Player.SendInstanceUpdate` scans
-/// `GetActorsAroundActor(this, 50)` in BOTH `zone` and `zone2`
-/// (Player.cs:2285-2288), and `send_zone_in_bundle`'s warp-time
-/// neighbour scan uses the same figure.
-pub(crate) const INSTANCE_STREAM_RADIUS: f32 = 50.0;
+/// `GetActorsAroundActor(this, 50)`; at 50 NPCs (the Gridania chocobo
+/// lender) popped in only up close and fields looked empty, so the stream
+/// reaches twice as far. Open-world monsters are removed again past
+/// [`MONSTER_DESPAWN_RADIUS`], so their number on the client stays bounded.
+pub(crate) const INSTANCE_STREAM_RADIUS: f32 = 100.0;
+
+/// Radius of `send_zone_in_bundle`'s warp-time neighbour scan: pmeteor's
+/// 50, keeping warp bundles the size the client is known to take. The
+/// instance stream fills in the rest on the first position update.
+pub(crate) const ZONE_IN_BUNDLE_RADIUS: f32 = 50.0;
+
+/// An open-world monster the client has is removed from it (0x00CB, this
+/// client only) once it is this far from the player — the streaming
+/// radius plus a margin so an actor near the edge doesn't flicker.
+pub(crate) const MONSTER_DESPAWN_RADIUS: f32 = 130.0;
 
 /// Actor-number bit that marks a content-script-spawned actor.
 /// Content spawn appliers set bit 18 in the composite actor id
@@ -2693,7 +2704,7 @@ impl WorldManager {
                     .collect(),
                 None => z
                     .core
-                    .actors_around(actor_id, INSTANCE_STREAM_RADIUS)
+                    .actors_around(actor_id, ZONE_IN_BUNDLE_RADIUS)
                     .into_iter()
                     .filter(|a| a.actor_id != actor_id)
                     .filter(|a| {
@@ -3696,14 +3707,13 @@ impl WorldManager {
     /// Wench population lives in partner zone 133 while the player roams
     /// 230).
     ///
-    /// ADD-ONLY first cut: it spawns newly-in-range actors and records
-    /// them in `session.actor_instance_list`, but does NOT despawn
-    /// actors the player walks away from (pmeteor sends RemoveActor on
-    /// the diff). Add-only deliberately avoids fighting the warp-time
-    /// mass-delete keep-list and quest `SetENpc` broadcasts that assume
-    /// an NPC stays in the client's table; the cost is that distant
-    /// actors linger client-side, which is benign at 1.x zone scale.
-    /// Despawn-on-distance is a follow-up.
+    /// It spawns newly-in-range actors and records them in
+    /// `session.actor_instance_list`. Open-world monsters are removed again
+    /// past [`MONSTER_DESPAWN_RADIUS`] (pmeteor sends RemoveActor on the
+    /// diff); populace and quest NPCs stay add-only, which avoids fighting
+    /// the warp-time mass-delete keep-list and quest `SetENpc` broadcasts
+    /// that assume an NPC stays in the client's table — their count is
+    /// small at 1.x zone scale.
     ///
     /// Private-area instances get their full population at zone-in (no
     /// radius scan) and are skipped here. Content instances DO stream:
@@ -3712,7 +3722,7 @@ impl WorldManager {
     /// reload only) — without it the escort's 8 ankle biters never
     /// receive an AddActor and fight invisibly (wire-proven: Sisipu died
     /// to an unrendered mob). Safe by construction: INSTANCE_STREAM_RADIUS
-    /// (50) exceeds the escort's ENGAGE_RADIUS (18) + PLAYER_LEASH (15)
+    /// (100) exceeds the escort's ENGAGE_RADIUS (18) + PLAYER_LEASH (15)
     /// and the controller's MAX_DETECT_DISTANCE (20), so a mob always
     /// renders before it can reach or aggro the player. (#46.)
     pub async fn send_instance_update(
@@ -3752,18 +3762,30 @@ impl WorldManager {
         // NOT already have, holding the zone read-lock only for the scan.
         // The player's live grid position + region ride along for the
         // partner-zone point query below.
-        let (new_ids, player_position, region_id, zone_name): (
+        let (new_ids, far_ids, player_position, region_id, zone_name): (
+            Vec<u32>,
             Vec<u32>,
             Option<Vector3>,
             u32,
             String,
         ) = {
             let z = zone_arc.read().await;
+            let center = z.core.find_actor(actor_id).map(|a| a.position);
             let ids = z
                 .core
                 .actors_around(actor_id, INSTANCE_STREAM_RADIUS)
                 .into_iter()
                 .filter(|a| a.actor_id != actor_id)
+                // `actors_around` returns whole grid cells (up to ~1.5x the
+                // radius); keep the exact radius so it stays inside
+                // MONSTER_DESPAWN_RADIUS and edge monsters don't flicker
+                // between streamed and removed every update.
+                .filter(|a| {
+                    center.is_none_or(|c| {
+                        let (dx, dz) = (a.position.x - c.x, a.position.z - c.z);
+                        dx * dx + dz * dz <= INSTANCE_STREAM_RADIUS * INSTANCE_STREAM_RADIUS
+                    })
+                })
                 .filter(|a| {
                     matches!(
                         a.kind,
@@ -3784,13 +3806,57 @@ impl WorldManager {
                 .map(|a| a.actor_id)
                 .filter(|id| !session.actor_instance_list.contains(id))
                 .collect();
+            // Open-world monsters the client has that are now far away.
+            // Only base-zone BattleNpcs: populace and quest NPCs stay
+            // add-only (quest ENPC broadcasts and the warp keep-list
+            // assume they remain in the client's table), and content
+            // actors live and die with their instance.
+            let player_pos = z.core.find_actor(actor_id).map(|a| a.position);
+            let far: Vec<u32> = match player_pos {
+                Some(p) => session
+                    .actor_instance_list
+                    .iter()
+                    .copied()
+                    .filter(|id| (id & CONTENT_ACTOR_BAND_BIT) == 0)
+                    .filter(|id| {
+                        z.core.find_actor(*id).is_some_and(|a| {
+                            matches!(a.kind, crate::zone::area::ActorKind::BattleNpc) && {
+                                let (dx, dz) = (a.position.x - p.x, a.position.z - p.z);
+                                dx * dx + dz * dz > MONSTER_DESPAWN_RADIUS * MONSTER_DESPAWN_RADIUS
+                            }
+                        })
+                    })
+                    .collect(),
+                None => Vec::new(),
+            };
             (
                 ids,
-                z.core.find_actor(actor_id).map(|a| a.position),
+                far,
+                player_pos,
                 z.core.region_id as u32,
                 z.core.zone_name.clone(),
             )
         };
+
+        if !far_ids.is_empty() {
+            for id in &far_ids {
+                let mut sub = crate::packets::send::actor::build_remove_actor(*id);
+                sub.set_target_id(session_id);
+                client.send_bytes(sub.to_bytes()).await;
+            }
+            let mut sessions = self.sessions.write().await;
+            if let Some(s) = sessions.get_mut(&session_id) {
+                for id in &far_ids {
+                    s.actor_instance_list.remove(id);
+                }
+            }
+            tracing::debug!(
+                actor = format!("0x{actor_id:08X}"),
+                session = session_id,
+                removed = far_ids.len(),
+                "send_instance_update: removed out-of-range monsters",
+            );
+        }
 
         // `(actor_id, owning-zone name)` per streamable actor — the zone
         // name feeds the generated actor name's zone abbreviation, so a

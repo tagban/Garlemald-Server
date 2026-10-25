@@ -17777,3 +17777,102 @@ async fn send_message_runtime_applier_emits_0x0003_to_self() {
     );
     assert_eq!(&subs[0].data[0x24..0x24 + 12], b"runtime line", "text body");
 }
+
+/// Open-world monsters the client has are removed (0x00CB to this client)
+/// once they are past MONSTER_DESPAWN_RADIUS; populace stays add-only.
+#[tokio::test]
+async fn send_instance_update_removes_far_monsters_only() {
+    use crate::actor::Character;
+    use crate::data::{ClientHandle, Session as MapSession};
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::area::{ActorKind, StoredActor};
+    use crate::zone::outbox::AreaOutbox;
+    use crate::zone::zone::Zone;
+    use common::Vector3;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    const MOB: u32 = 0x44B2_0001;
+    const NPC: u32 = 0x44B0_0005;
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let zone = Zone::new(
+        150,
+        "fst0Field01".to_string(),
+        103,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+    );
+    world.register_zone(zone).await;
+    let zone_arc = world.zone(150).await.unwrap();
+    let mut player = Character::new(1);
+    player.base.zone_id = 150;
+    registry
+        .insert(ActorHandle::new(1, ActorKindTag::Player, 150, 1, player))
+        .await;
+    for (id, tag) in [(MOB, ActorKindTag::BattleNpc), (NPC, ActorKindTag::Npc)] {
+        let mut c = Character::new(id);
+        c.base.zone_id = 150;
+        registry.insert(ActorHandle::new(id, tag, 150, 0, c)).await;
+    }
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
+    world.register_client(1, ClientHandle::new(1, tx)).await;
+    let mut session = MapSession::new(1);
+    session.current_zone_id = 150;
+    // The client already has both (they were streamed in earlier).
+    session.actor_instance_list.insert(MOB);
+    session.actor_instance_list.insert(NPC);
+    world.upsert_session(session).await;
+    {
+        let mut z = zone_arc.write().await;
+        let mut out = AreaOutbox::new();
+        for (id, kind, x) in [
+            (1, ActorKind::Player, 0.0),
+            (MOB, ActorKind::BattleNpc, 200.0),
+            (NPC, ActorKind::Npc, 200.0),
+        ] {
+            z.core.add_actor(
+                StoredActor {
+                    actor_id: id,
+                    kind,
+                    position: Vector3::new(x, 0.0, 0.0),
+                    grid: (0, 0),
+                    is_alive: true,
+                },
+                &mut out,
+            );
+            z.core
+                .update_actor_position(id, Vector3::new(x, 0.0, 0.0), &mut out);
+        }
+    }
+
+    world.send_instance_update(&registry, None, 1, 1).await;
+
+    let mut removed = Vec::new();
+    while let Ok(bytes) = rx.try_recv() {
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let Ok(sub) = common::subpacket::SubPacket::parse(&bytes, &mut offset) else {
+                break;
+            };
+            if sub.game_message.opcode == crate::packets::opcodes::OP_REMOVE_ACTOR {
+                removed.push(sub.header.source_id);
+            }
+        }
+    }
+    assert_eq!(removed, vec![MOB], "only the far monster is removed");
+    let s = world.session(1).await.unwrap();
+    assert!(!s.actor_instance_list.contains(&MOB));
+    assert!(
+        s.actor_instance_list.contains(&NPC),
+        "populace stays add-only"
+    );
+}
