@@ -1,29 +1,27 @@
-# Garlemald Server
+# XIVLegacy Server
 
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE.md)
 [![Rust](https://img.shields.io/badge/rust-1.95-orange.svg)](rust-toolchain.toml)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#quick-start)
-[![Discord](https://img.shields.io/badge/discord-join-5865F2.svg)](https://discord.gg/CVjwWs6jnX)
 
-A private-server emulator for **FINAL FANTASY XIV v1.23b** — the final
-patch of the original 1.0 release, not *A Realm Reborn* — written from
-the ground up in Rust.
+A server for **FINAL FANTASY XIV v1.23b**, the final patch of the original
+1.0 release (not *A Realm Reborn*), written in Rust and being built into a game
+server you can host for real players: one authority for who is online,
+optional modules, a database with enforced relationships, and a target of 100
+players at once. See [docs/DESIGN.md](docs/DESIGN.md) for the plan and its
+progress.
 
-Garlemald Server is a port of the upstream C#
+Players connect with the
+[XIVLegacy launcher](https://github.com/tagban/xivlegacy-launcher), which sets
+up the 1.23b client from the original disc and patches and joins a server.
+Only a client reporting version `2012.09.19.0001` can connect.
+
+XIVLegacy Server is a fork of
+[Garlemald Server](https://github.com/swstegall/Garlemald-Server) by Samuel
+Stegall, itself a Rust port of
 [Project Meteor Server](https://bitbucket.org/Ioncannon/project-meteor-server/).
-The lobby / world / map services, the 1.x wire protocol, the
-Blowfish-keyed session handshake, and the Lua-driven content system are
-preserved. The external stack (MySQL, PHP, WAMP, IIS) collapses into a
-single Cargo workspace that runs on any platform Rust targets, with
-SQLite in place of MySQL and an embedded axum HTTP service in place of
-the PHP auth frontend.
-
-Only a client reporting version `2012.09.19.0001` will negotiate the
-wire protocol correctly. The companion
-[Garlemald Client](https://github.com/swstegall/Garlemald-Client) will
-patch a stock 1.x install up to that version automatically.
-
-> Created with [Claude](https://claude.ai/).
+The lobby, world and map services, the 1.x wire protocol, the Blowfish-keyed
+session handshake and the Lua content system come from there, under the same
+AGPL-3.0 license. Fixes that apply to Garlemald are still offered upstream.
 
 ## Highlights
 
@@ -117,10 +115,9 @@ directory.
 
 On a fresh checkout the first run will create `./data/garlemald.db`,
 apply the bundled schema, seed every reference table, and boot the
-stack on localhost. Point
-[Garlemald Client](https://github.com/swstegall/Garlemald-Client) or a
-patched 1.23b client at `127.0.0.1:54994` and sign up via the web
-endpoint to get a playable session.
+stack on localhost. Add `127.0.0.1` as a server in the
+[XIVLegacy launcher](https://github.com/tagban/xivlegacy-launcher), then use
+Create Account and Join.
 
 ## Configuration
 
@@ -177,15 +174,16 @@ pull request:
 
 ## Contributing
 
-Contributions are welcome. The short version: ask for collaborator + project-board
-access on [Discord](https://discord.gg/CVjwWs6jnX), pick an issue from the board's
-**Ready** column, branch off **`develop`**, keep CI green
-(`fmt` / `clippy` / `build` / `test`), and open a PR into **`develop`**. The full
-walkthrough is in **[`CONTRIBUTING.md`](CONTRIBUTING.md)**.
+Issues and pull requests are welcome on
+[tagban/xivlegacy-server](https://github.com/tagban/xivlegacy-server). Keep CI
+green (`fmt` / `clippy` / `build` / `test`). Fixes that also apply to Garlemald
+are worth offering upstream too.
 
 ## Attribution and licensing
 
-Garlemald Server stands on the shoulders of
+XIVLegacy Server is a fork of
+[Garlemald Server](https://github.com/swstegall/Garlemald-Server), which stands
+on the shoulders of
 [Project Meteor Server](https://bitbucket.org/Ioncannon/project-meteor-server/)
 and [Seventh Umbral](https://github.com/Meteor-Project/SeventhUmbral)
 for the FFXIV 1.x side, and of
@@ -203,7 +201,7 @@ LandSandBoat translations) and [`LICENSE.md`](LICENSE.md) for the full
 terms of the **GNU Affero General Public License, version 3 or later**,
 under which this project is distributed.
 
-## Sister projects
+## Related projects
 
 - **[meteor-decomp](https://github.com/swstegall/meteor-decomp)** —
   clean-room decompilation of the FFXIV 1.23b Windows client binaries,
@@ -223,10 +221,3 @@ under which this project is distributed.
   one-command installer that stands up a working 1.23b client on x86_64
   Linux across distributions — the counterpart to the Apple Silicon
   installer above.
-
-## Community
-
-Development discussion, bug reports, and questions for the maintainer
-happen on the Garlemald Server Discord:
-
-<https://discord.gg/CVjwWs6jnX>
