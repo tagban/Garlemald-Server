@@ -60,6 +60,8 @@ pub struct ClientHandle {
     /// Signalled to make this connection's read-loop exit early when it is
     /// evicted by a duplicate login (mirrors C# `ClientConnection.Disconnect()`).
     pub shutdown: Arc<Notify>,
+    /// The client's IP address, for `world_sessions` (empty in tests).
+    pub peer: String,
 }
 
 impl ClientHandle {
@@ -70,7 +72,13 @@ impl ClientHandle {
             tx,
             owned: Arc::new(Mutex::new(Vec::new())),
             shutdown: Arc::new(Notify::new()),
+            peer: String::new(),
         }
+    }
+
+    pub fn with_peer(mut self, peer: String) -> Self {
+        self.peer = peer;
+        self
     }
 
     /// Best-effort send. Drops if the channel is closed (client has

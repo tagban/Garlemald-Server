@@ -417,10 +417,250 @@ impl Database {
     }
 }
 
+/// Unix seconds now.
+fn now_s() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// `world_sessions` (seed 102): who is in the game. Only the world server
+/// writes it; see docs/DESIGN.md, Sessions.
+impl Database {
+    /// At boot: nobody is online until they connect to this world server.
+    pub async fn clear_world_sessions(&self) -> Result<usize> {
+        self.conn
+            .call_db(|c| c.execute("DELETE FROM world_sessions", []))
+            .await
+            .context("clearing world_sessions")
+    }
+
+    /// A character entering the world (state `connecting`). The row is keyed
+    /// by account, so it replaces any session of another character on the
+    /// same account; that character's id is returned so the caller can end it.
+    pub async fn begin_world_session(&self, s: NewWorldSession) -> Result<Option<u32>> {
+        self.conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                let account: Option<i64> = tx
+                    .query_row(
+                        "SELECT userId FROM characters WHERE id = :c",
+                        named_params! { ":c": s.character_id },
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let Some(account) = account else {
+                    return Ok(None);
+                };
+                let previous: Option<u32> = tx
+                    .query_row(
+                        "SELECT character_id FROM world_sessions WHERE account_id = :a",
+                        named_params! { ":a": account },
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                // a session of this character under another account can't
+                // exist (characters belong to one account), but the UNIQUE
+                // character_id would refuse the insert if a stale one did
+                tx.execute(
+                    "DELETE FROM world_sessions WHERE character_id = :c",
+                    named_params! { ":c": s.character_id },
+                )?;
+                let now = now_s();
+                tx.execute(
+                    r"INSERT OR REPLACE INTO world_sessions
+                        (account_id, character_id, world_id, zone_id, map_server, client_ip,
+                         conn_seq, started_at, last_seen_at, state)
+                      VALUES (:a, :c, :w, :z, :m, :ip, :seq, :now, :now, 'connecting')",
+                    named_params! {
+                        ":a": account, ":c": s.character_id, ":w": s.world_id, ":z": s.zone_id,
+                        ":m": s.map_server, ":ip": s.client_ip, ":seq": s.conn_seq as i64, ":now": now,
+                    },
+                )?;
+                tx.commit()?;
+                Ok(previous.filter(|&p| p != s.character_id))
+            })
+            .await
+            .context("beginning a world session")
+    }
+
+    /// The map server accepted the character: `in_world`, and the character's
+    /// last activity stamped.
+    pub async fn world_session_in_world(&self, character_id: u32) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                let now = now_s();
+                c.execute(
+                    "UPDATE world_sessions SET state = 'in_world', last_seen_at = :now WHERE character_id = :c",
+                    named_params! { ":c": character_id, ":now": now },
+                )?;
+                c.execute(
+                    "UPDATE characters SET lastActiveAt = :now WHERE id = :c",
+                    named_params! { ":c": character_id, ":now": now },
+                )?;
+                Ok(())
+            })
+            .await
+            .context("marking a world session in the world")
+    }
+
+    /// The character is changing zones; `destination` is set once the map
+    /// server says where (zone id, map server).
+    pub async fn world_session_zoning(
+        &self,
+        character_id: u32,
+        destination: Option<(u32, String)>,
+    ) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                let now = now_s();
+                match destination {
+                    Some((zone, map)) => c.execute(
+                        r"UPDATE world_sessions SET state = 'zoning', zone_id = :z, map_server = :m,
+                          last_seen_at = :now WHERE character_id = :c",
+                        named_params! { ":c": character_id, ":z": zone, ":m": map, ":now": now },
+                    )?,
+                    None => c.execute(
+                        "UPDATE world_sessions SET state = 'zoning', last_seen_at = :now WHERE character_id = :c",
+                        named_params! { ":c": character_id, ":now": now },
+                    )?,
+                };
+                Ok(())
+            })
+            .await
+            .context("marking a world session zoning")
+    }
+
+    /// The character left: the row goes, unless a newer connection (another
+    /// `conn_seq`) has taken the session over since, and the character's last
+    /// activity is stamped.
+    pub async fn end_world_session(&self, character_id: u32, conn_seq: u64) -> Result<bool> {
+        self.conn
+            .call_db(move |c| {
+                let n = c.execute(
+                    "DELETE FROM world_sessions WHERE character_id = :c AND conn_seq = :seq",
+                    named_params! { ":c": character_id, ":seq": conn_seq as i64 },
+                )?;
+                if n > 0 {
+                    c.execute(
+                        "UPDATE characters SET lastActiveAt = :now WHERE id = :c",
+                        named_params! { ":c": character_id, ":now": now_s() },
+                    )?;
+                }
+                Ok(n > 0)
+            })
+            .await
+            .context("ending a world session")
+    }
+
+    /// Every 30 s: the characters still connected to this world server were
+    /// seen now.
+    pub async fn touch_world_sessions(&self, character_ids: Vec<u32>) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                let now = now_s();
+                {
+                    let mut stmt =
+                        tx.prepare("UPDATE world_sessions SET last_seen_at = :now WHERE character_id = :c")?;
+                    for id in character_ids {
+                        stmt.execute(named_params! { ":c": id, ":now": now })?;
+                    }
+                }
+                tx.commit()
+            })
+            .await
+            .context("refreshing world sessions")
+    }
+}
+
+/// What `begin_world_session` records.
+#[derive(Debug, Clone)]
+pub struct NewWorldSession {
+    pub character_id: u32,
+    pub world_id: u32,
+    pub zone_id: u32,
+    pub map_server: String,
+    pub client_ip: String,
+    pub conn_seq: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SessionDbSnapshot {
     pub character_name: String,
     pub current_zone_id: u32,
     pub destination_zone_id: u32,
     pub active_linkshell: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(character_id: u32, conn_seq: u64) -> NewWorldSession {
+        NewWorldSession {
+            character_id,
+            world_id: 1,
+            zone_id: 133,
+            map_server: "127.0.0.1:1989".into(),
+            client_ip: "10.0.0.5".into(),
+            conn_seq,
+        }
+    }
+
+    async fn rows(db: &Database) -> Vec<(u32, String, u64)> {
+        db.conn_for_test()
+            .call_db(|c| {
+                let mut st = c.prepare("SELECT character_id, state, conn_seq FROM world_sessions ORDER BY character_id")?;
+                st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u64)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn world_sessions_follow_the_lifecycle() {
+        let path = std::env::temp_dir().join(format!("xivl-world-sessions-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let db = Database::open(&path).await.unwrap();
+        db.conn_for_test()
+            .call_db(|c| {
+                c.execute_batch(
+                    "INSERT INTO users (id, username, passwordHash) VALUES (1, 'a', 'x'), (2, 'b', 'x');
+                     INSERT INTO characters (id, userId, slot, serverId, name) VALUES
+                         (10, 1, 0, 1, 'Alpha One'), (11, 1, 1, 1, 'Alpha Two'), (20, 2, 0, 1, 'Beta One');",
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(db.begin_world_session(session(10, 1)).await.unwrap(), None);
+        assert_eq!(db.begin_world_session(session(20, 2)).await.unwrap(), None);
+        db.world_session_in_world(10).await.unwrap();
+        assert_eq!(rows(&db).await, vec![(10, "in_world".into(), 1), (20, "connecting".into(), 2)]);
+
+        // the same account with its other character: one row, the first character named
+        assert_eq!(db.begin_world_session(session(11, 3)).await.unwrap(), Some(10));
+        assert_eq!(rows(&db).await, vec![(11, "connecting".into(), 3), (20, "connecting".into(), 2)]);
+
+        // a reconnect of a character: the old connection's disconnect leaves the new session
+        db.begin_world_session(session(20, 4)).await.unwrap();
+        assert!(!db.end_world_session(20, 2).await.unwrap());
+        db.world_session_zoning(20, Some((155, "127.0.0.1:1990".into()))).await.unwrap();
+        assert_eq!(rows(&db).await, vec![(11, "connecting".into(), 3), (20, "zoning".into(), 4)]);
+        assert!(db.end_world_session(20, 4).await.unwrap());
+        let last: Option<i64> = db
+            .conn_for_test()
+            .call_db(|c| c.query_row("SELECT lastActiveAt FROM characters WHERE id = 20", [], |r| r.get(0)))
+            .await
+            .unwrap();
+        assert!(last.is_some_and(|t| t > 1_700_000_000));
+
+        db.touch_world_sessions(vec![11]).await.unwrap();
+        assert_eq!(db.clear_world_sessions().await.unwrap(), 1);
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
 }
