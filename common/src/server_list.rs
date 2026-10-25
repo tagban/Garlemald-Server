@@ -28,6 +28,7 @@
 //! id            = 1
 //! name          = "Fernehalwes"
 //! address       = "127.0.0.1"
+//! # lan_address = "auto"   # optional: what clients on the server's own network get
 //! port          = 54992
 //! list_position = 1
 //! max_chars     = 5000
@@ -61,6 +62,14 @@ pub struct ServerEntry {
     pub name: String,
     /// Address handed to the client for the lobby → world handoff.
     pub address: String,
+    /// Address handed instead to clients on the server's own network (a
+    /// private, link-local or loopback source address), for hosts behind a
+    /// router that can't send its LAN back to its own public address
+    /// (hairpin NAT). `"auto"` hands out the address the client used to
+    /// reach the lobby, which suits a lobby and world on the same machine.
+    /// Unset: every client gets `address`.
+    #[serde(default)]
+    pub lan_address: Option<String>,
     pub port: u16,
     #[serde(default = "default_list_position")]
     pub list_position: u16,
@@ -91,6 +100,7 @@ impl Default for ServerList {
                 id: 1,
                 name: "Fernehalwes".to_string(),
                 address: "127.0.0.1".to_string(),
+                lan_address: None,
                 port: 54992,
                 list_position: 1,
                 max_chars: 5000,

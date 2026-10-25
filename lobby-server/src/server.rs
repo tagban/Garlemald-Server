@@ -86,7 +86,11 @@ async fn handle_connection(
     peer: SocketAddr,
     processor: Arc<PacketProcessor>,
 ) -> Result<()> {
-    let mut session = LobbySession::default();
+    let mut session = LobbySession {
+        peer: Some(peer),
+        local: socket.local_addr().ok(),
+        ..Default::default()
+    };
     let mut buffer = vec![0u8; BUFFER_SIZE];
     let mut pending = 0usize;
 
