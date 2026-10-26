@@ -455,7 +455,18 @@ impl UserData for LuaNpc {
         methods.add_method("GetUniqueId", |_, this, _: ()| {
             Ok(this.base.unique_id.clone())
         });
-        methods.add_method("GetActorClassId", |_, this, _: ()| Ok(this.actor_class_id));
+        // `npc.GetActorClassId()` (dot, no self) as well as the colon form:
+        // Meteor's runtime took both and 55 quest `onTalk`s use the dot.
+        // Answered from `__index` so the dot call gets a bound function.
+        methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
+            if key == "GetActorClassId" {
+                let id = this.actor_class_id;
+                return lua
+                    .create_function(move |_, _: mlua::Variadic<Value>| Ok(id))
+                    .map(Value::Function);
+            }
+            Ok(Value::Nil)
+        });
         methods.add_method("GetZoneID", |_, this, _: ()| Ok(this.base.zone_id));
         methods.add_method("SetQuestGraphic", |_, this, graphic: u8| {
             push(
@@ -5181,7 +5192,16 @@ pub struct LuaQuestHandle {
 
 impl UserData for LuaQuestHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("GetQuestId", |_, this, _: ()| Ok(this.quest_id));
+        // `quest.GetQuestId()` too (dot, no self), as Meteor's runtime took it.
+        methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
+            if key == "GetQuestId" {
+                let id = this.quest_id;
+                return lua
+                    .create_function(move |_, _: mlua::Variadic<Value>| Ok(id))
+                    .map(Value::Function);
+            }
+            Ok(Value::Nil)
+        });
         // `quest:getQuestId()` lowercase alias — same MoonSharp
         // case-insensitivity story as `getSequence` below. 4 sites.
         methods.add_method("getQuestId", |_, this, _: ()| Ok(this.quest_id));

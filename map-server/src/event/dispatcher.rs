@@ -815,12 +815,14 @@ async fn owner_claimed_by_current_quest(
     owner_class_id: u32,
 ) -> bool {
     let c = player_handle.character.read().await;
-    c.quest_journal.slots.iter().flatten().any(|q| {
-        q.state
-            .current
-            .values()
-            .any(|e| e.actor_class_id == owner_class_id)
-    })
+    // a quest on offer at this NPC drives the talk the same way
+    c.quest_offers.contains_key(&owner_class_id)
+        || c.quest_journal.slots.iter().flatten().any(|q| {
+            q.state
+                .current
+                .values()
+                .any(|e| e.actor_class_id == owner_class_id)
+        })
 }
 
 /// Director-flavoured `onEventStarted` dispatch.

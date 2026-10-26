@@ -58,6 +58,7 @@ use crate::social::{
 use crate::world_manager::WorldManager;
 
 mod equip;
+mod quest_offers;
 
 /// Read a null-terminated ASCII string out of a fixed-size byte slice.
 /// Used by the retail-IN dispatch arms (`OP_RX_DATA_REQUEST`,
@@ -939,6 +940,8 @@ impl PacketProcessor {
         for quest_id in active_quest_ids {
             self.apply_quest_update_enpcs(actor_id, quest_id).await;
         }
+        // Then the quests on offer, so their givers show the marker.
+        self.refresh_quest_offers(&handle).await;
 
         Ok(())
     }
@@ -1466,18 +1469,21 @@ impl PacketProcessor {
                 quest_id,
             } => {
                 self.apply_add_quest(player_id, quest_id).await;
+                self.refresh_quest_offers_for(player_id).await;
             }
             LC::CompleteQuest {
                 player_id,
                 quest_id,
             } => {
                 self.apply_complete_quest(player_id, quest_id).await;
+                self.refresh_quest_offers_for(player_id).await;
             }
             LC::AbandonQuest {
                 player_id,
                 quest_id,
             } => {
                 self.apply_abandon_quest(player_id, quest_id).await;
+                self.refresh_quest_offers_for(player_id).await;
             }
             LC::DoEmote {
                 actor_id,
@@ -7388,6 +7394,20 @@ impl PacketProcessor {
         hook_name: &'static str,
         extra_args: Vec<crate::lua::QuestHookArg>,
     ) {
+        self.fire_quest_event_hook_inner(handle, quest_id, hook_name, extra_args, false)
+            .await;
+    }
+
+    /// `fire_quest_event_hook`, or with `offer` for a quest on offer (not in
+    /// the journal: the hook sees it at `SEQ_ACCEPT`).
+    async fn fire_quest_event_hook_inner(
+        &self,
+        handle: &ActorHandle,
+        quest_id: u32,
+        hook_name: &'static str,
+        extra_args: Vec<crate::lua::QuestHookArg>,
+        offer: bool,
+    ) {
         let Some(engine) = self.lua.as_ref() else {
             return;
         };
@@ -7401,26 +7421,26 @@ impl PacketProcessor {
 
         let (snapshot, quest_handle) = {
             let c = handle.character.read().await;
-            if !c.quest_journal.has(quest_id) {
-                return;
-            }
             let snap = build_player_snapshot_from_character(&c);
-            let q = c.quest_journal.get(quest_id).expect("has");
-            let qh = crate::lua::LuaQuestHandle {
-                player_id: snap.actor_id,
-                quest_id,
-                has_quest: true,
-                sequence: q.get_sequence(),
-                flags: q.get_flags(),
-                counters: [
-                    q.get_counter(0),
-                    q.get_counter(1),
-                    q.get_counter(2),
-                    q.get_counter(3),
-                ],
-                npc_ls_from: q.get_npc_ls_from(),
-                npc_ls_msg_step: q.get_npc_ls_msg_step(),
-                queue: crate::lua::command::CommandQueue::new(),
+            let qh = match c.quest_journal.get(quest_id) {
+                Some(q) => crate::lua::LuaQuestHandle {
+                    player_id: snap.actor_id,
+                    quest_id,
+                    has_quest: true,
+                    sequence: q.get_sequence(),
+                    flags: q.get_flags(),
+                    counters: [
+                        q.get_counter(0),
+                        q.get_counter(1),
+                        q.get_counter(2),
+                        q.get_counter(3),
+                    ],
+                    npc_ls_from: q.get_npc_ls_from(),
+                    npc_ls_msg_step: q.get_npc_ls_msg_step(),
+                    queue: crate::lua::command::CommandQueue::new(),
+                },
+                None if offer => quest_offers::offer_handle(snap.actor_id, quest_id),
+                None => return,
             };
             (snap, qh)
         };
@@ -9511,15 +9531,35 @@ impl PacketProcessor {
                 .map(|q| q.quest_id())
                 .collect()
         };
-        if active_quest_ids.is_empty() {
-            return;
-        }
         let Some(npc_spec) = self.build_npc_spec(npc_actor_id).await else {
             // Not a registered actor (e.g. director-owned kicks) — the
             // event went through the normal dispatch; we just skip the
             // quest-side fan-out loop.
             return;
         };
+
+        // A giver with a quest on offer: that quest's onTalk at SEQ_ACCEPT
+        // runs the offer, alone (another quest's generic EndEvent would
+        // close it).
+        if hook_name == "onTalk"
+            && let Some(quest_id) = self.offered_quest_at(handle, npc_spec.actor_class_id).await
+        {
+            self.fire_quest_event_hook_inner(
+                handle,
+                quest_id,
+                hook_name,
+                vec![
+                    crate::lua::QuestHookArg::Npc(npc_spec.clone()),
+                    crate::lua::QuestHookArg::Str(event_name.to_string()),
+                ],
+                true,
+            )
+            .await;
+            return;
+        }
+        if active_quest_ids.is_empty() {
+            return;
+        }
 
         // Populace NPCs with their own menu script (chocobo lender, shops,
         // leve publishers, …) run that script for the talk; a quest's

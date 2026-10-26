@@ -504,6 +504,10 @@ pub struct Character {
     /// would just double the write-path bookkeeping. Only Players ever
     /// populate it; NPCs/BattleNpcs carry the default empty journal.
     pub quest_journal: crate::actor::quest::QuestJournal,
+    /// Quests this player can take, by the class id of the NPC who offers
+    /// them: `(quest id, the giver's marker)`. Players only; see
+    /// `processor/quest_offers.rs`.
+    pub quest_offers: std::collections::HashMap<u32, (u32, crate::actor::quest::QuestEnpc)>,
 }
 
 impl Character {
@@ -521,6 +525,7 @@ impl Character {
             battle_save: crate::battle::BattleSave::default(),
             event_session: crate::event::EventSession::default(),
             quest_journal: crate::actor::quest::QuestJournal::default(),
+            quest_offers: Default::default(),
         }
     }
 }
