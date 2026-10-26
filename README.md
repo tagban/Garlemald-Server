@@ -2,9 +2,12 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE.md)
 [![Rust](https://img.shields.io/badge/rust-1.95-orange.svg)](rust-toolchain.toml)
+[![Discord](https://img.shields.io/badge/Discord-join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/D9k3khqvy8)
 
 A server for **FINAL FANTASY XIV v1.23b**, the final patch of the original
 1.0 release (not *A Realm Reborn*), written in Rust.
+
+**Community:** questions, testing and news on the [XIVLegacy Discord](https://discord.gg/D9k3khqvy8).
 
 **Where it comes from.** XIVLegacy Server is derived from the original
 community server work: it is a fork of
