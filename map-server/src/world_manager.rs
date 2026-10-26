@@ -2271,33 +2271,40 @@ impl WorldManager {
             player_class_name,
             &script_bind_params,
         ));
-        subpackets.extend([
-            tx::actor_inventory::build_inventory_begin_change(actor_id, true),
-            // Empty-package brackets. Even with the `encode_item` fixes
-            // (tags[4] vs tags[8], TAG_EXCLUSIVE) bringing garlemald's
-            // 0x0149 packet body to byte-structural parity with
-            // pmeteor's, the post-warp inventory emission STILL crashes
-            // Wine — suggesting the crash isn't the encoded item shape
-            // but something state-adjacent (the client already knows
-            // about these unique_ids from per-AddItem dispatches at
-            // LOGIN, and a post-warp re-load of the same ids may trip
-            // some duplicate-detection assertion). Disabling inventory
-            // emission here keeps the bundle wire-stable while the
-            // root cause is investigated separately.
-            tx::actor_inventory::build_inventory_set_begin(actor_id, 200, 0),
-            tx::actor_inventory::build_inventory_set_end(actor_id),
-            tx::actor_inventory::build_inventory_set_begin(actor_id, 320, 99),
-            tx::actor_inventory::build_inventory_set_end(actor_id),
-            tx::actor_inventory::build_inventory_set_begin(actor_id, 500, 100),
-            tx::actor_inventory::build_inventory_set_end(actor_id),
-            tx::actor_inventory::build_inventory_set_begin(actor_id, 10, 7),
-            tx::actor_inventory::build_inventory_set_end(actor_id),
-            tx::actor_inventory::build_inventory_set_begin(actor_id, 4, 5),
-            tx::actor_inventory::build_inventory_set_end(actor_id),
-            tx::actor_inventory::build_inventory_set_begin(actor_id, 10, 4),
-            tx::actor_inventory::build_inventory_set_end(actor_id),
-            tx::actor_inventory::build_inventory_set_begin(actor_id, 35, 0x00FE),
-        ]);
+        // The player's real item packages (Meteor `Player.SendZoneInPackets`
+        // → each `ItemPackage.SendFullPackage`): normal items, currency
+        // (gil), key items, bazaar, meld requests, loot. Garlemald sent them
+        // empty, because filling them crashed the stock client under Wine;
+        // an empty package replaces what the client holds, so everything
+        // owned (starting gear, gil, items given by GMs) vanished at every
+        // login and zone change. The native client takes the full lists.
+        subpackets.push(tx::actor_inventory::build_inventory_begin_change(
+            actor_id, true,
+        ));
+        for (cap, code) in [
+            (200u16, 0u16),
+            (320, 99),
+            (500, 100),
+            (10, 7),
+            (4, 5),
+            (10, 4),
+        ] {
+            let rows = db
+                .get_item_package(actor_id, code as u32)
+                .await
+                .unwrap_or_default();
+            subpackets.push(tx::actor_inventory::build_inventory_set_begin(
+                actor_id, cap, code,
+            ));
+            subpackets.extend(
+                rows.iter()
+                    .map(|r| tx::actor_inventory::build_inventory_list_x01(actor_id, r)),
+            );
+            subpackets.push(tx::actor_inventory::build_inventory_set_end(actor_id));
+        }
+        subpackets.push(tx::actor_inventory::build_inventory_set_begin(
+            actor_id, 35, 0x00FE,
+        ));
         // Meteor's `equipment.SendUpdate` calls SetInitialEquipmentPacket
         // (0x014E) between the set-begin/set-end brackets, even for a
         // fully-empty equipment set — the client's DepictionJudge Lua
