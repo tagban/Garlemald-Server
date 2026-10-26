@@ -3598,6 +3598,150 @@ impl Database {
         Ok(n > 0)
     }
 
+    /// (GM level, GM tag on) of the account `character_id` belongs to.
+    pub async fn gm_status_of_character(&self, character_id: u32) -> Result<(u8, bool)> {
+        let v = self
+            .conn
+            .call_db(move |c| {
+                let v: Option<(i64, i64)> = c
+                    .query_row(
+                        "SELECT u.gmLevel, u.gmTag FROM characters ch JOIN users u ON u.id = ch.userId WHERE ch.id = :c",
+                        named_params! { ":c": character_id },
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                Ok(v.unwrap_or((0, 0)))
+            })
+            .await?;
+        Ok((v.0.clamp(0, 255) as u8, v.1 != 0))
+    }
+
+    /// Turn the GM tag of `character_id`'s account on or off.
+    pub async fn set_gm_tag_of_character(&self, character_id: u32, on: bool) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    "UPDATE users SET gmTag = :t WHERE id = (SELECT userId FROM characters WHERE id = :c)",
+                    named_params! { ":c": character_id, ":t": on as i64 },
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// The gaol cell (1-based) `character_id` is held in, and why; None if free.
+    pub async fn jail_of_character(&self, character_id: u32) -> Result<Option<(u32, String)>> {
+        self.conn
+            .call_db(move |c| {
+                let v: Option<(Option<i64>, Option<String>)> = c
+                    .query_row(
+                        "SELECT jailCell, jailReason FROM characters WHERE id = :c",
+                        named_params! { ":c": character_id },
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                Ok(v.and_then(|(cell, why)| {
+                    cell.map(|n| (n.max(1) as u32, why.unwrap_or_default()))
+                }))
+            })
+            .await
+    }
+
+    /// Hold `character_id` in gaol cell `cell` (None: release them).
+    pub async fn set_jail_of_character(
+        &self,
+        character_id: u32,
+        jail: Option<(u32, String)>,
+    ) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                let (cell, why) = match jail {
+                    Some((n, w)) => (Some(n as i64), Some(w)),
+                    None => (None, None),
+                };
+                c.execute(
+                    "UPDATE characters SET jailCell = :n, jailReason = :w WHERE id = :c",
+                    named_params! { ":c": character_id, ":n": cell, ":w": why },
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Move an offline character: where they appear at their next login.
+    pub async fn set_character_position(
+        &self,
+        character_id: u32,
+        zone_id: u32,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> Result<bool> {
+        let n = self
+            .conn
+            .call_db(move |c| {
+                c.execute(
+                    r"UPDATE characters SET currentZoneId = :z, positionX = :x, positionY = :y, positionZ = :pz,
+                        currentPrivateArea = NULL, currentPrivateAreaType = 0, destinationZoneId = 0
+                      WHERE id = :c",
+                    named_params! { ":c": character_id, ":z": zone_id, ":x": x, ":y": y, ":pz": z },
+                )
+            })
+            .await?;
+        Ok(n > 0)
+    }
+
+    /// The character's starting city (characters.initialTown: 1 Limsa
+    /// Lominsa, 2 Gridania, 3 Ul'dah; 0 unknown).
+    pub async fn initial_town_of_character(&self, character_id: u32) -> Result<u32> {
+        self.conn
+            .call_db(move |c| {
+                let v: Option<i64> = c
+                    .query_row(
+                        "SELECT initialTown FROM characters WHERE id = :c",
+                        named_params! { ":c": character_id },
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                Ok(v.unwrap_or(0).max(0) as u32)
+            })
+            .await
+    }
+
+    /// How many of item `catalog_id` the character has in package `package`.
+    pub async fn item_count(
+        &self,
+        character_id: u32,
+        package: u16,
+        catalog_id: u32,
+    ) -> Result<i64> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    r"SELECT COALESCE(SUM(i.quantity), 0) FROM characters_inventory ci
+                      JOIN server_items i ON i.id = ci.serverItemId
+                      WHERE ci.characterId = :c AND ci.itemPackage = :p AND i.itemId = :i",
+                    named_params! { ":c": character_id, ":p": package, ":i": catalog_id },
+                    |r| r.get(0),
+                )
+            })
+            .await
+    }
+
+    /// A character's name by id.
+    pub async fn character_name(&self, character_id: u32) -> Result<Option<String>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT name FROM characters WHERE id = :c",
+                    named_params! { ":c": character_id },
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
+    }
+
     /// Zones whose id is `query`, or whose place name (Limsa Lominsa, Central
     /// Shroud) or internal name (sea0Town01) contains it, ignoring case: (id,
     /// place name), the exact place-name matches first.

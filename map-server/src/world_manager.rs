@@ -867,7 +867,10 @@ pub(crate) fn push_npc_spawn(
         motion_pack,
     ));
     subpackets.push(tx::actor::build_set_actor_status_all(actor_id, &[0u16; 20]));
-    subpackets.push(tx::actor::build_set_actor_icon(actor_id, 0));
+    subpackets.push(tx::actor::build_set_actor_icon(
+        actor_id,
+        crate::gm_tags::icon(actor_id),
+    ));
     subpackets.push(tx::actor::build_set_actor_is_zoning(actor_id, false));
     subpackets.push(tx::actor::build_actor_instantiate(
         actor_id,
@@ -2206,7 +2209,7 @@ impl WorldManager {
             tx::actor::build_set_actor_state(actor_id, main_state, 0),
             tx::actor::build_set_actor_sub_state(actor_id, 0, 0, 0, 0, 0, 0),
             tx::actor::build_set_actor_status_all(actor_id, &[0u16; 20]),
-            tx::actor::build_set_actor_icon(actor_id, 0),
+            tx::actor::build_set_actor_icon(actor_id, crate::gm_tags::icon(actor_id)),
             tx::actor::build_set_actor_is_zoning(actor_id, false),
         ]);
         // C# `Player.GetSpawnPackets` order:

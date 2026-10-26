@@ -1,0 +1,18 @@
+# XIVLegacy Server: Mordion Gaol, for !jail, shipped defaults. Don't edit this
+# file: put your cells in settings/jail.toml (a cells list replaces this one).
+#
+# A jailed character is held in their cell: put back if they log in or leave,
+# no commands, and only /say (nearby) chat until a GM uses !pardon.
+#
+# Mapping the cells: stand inside each cell and use !pos, then list them in
+# order; !jail <name> <cell number> uses that spot (cell 1 when omitted).
+# Note: where a player arrives in the gaol has depended on the zone they came
+# from (from Gridania the stone cells, from Limsa Lominsa a dark cave), so
+# check each cell after mapping it.
+
+zone = 177
+
+[[cells]]
+x = 2.0
+y = 2.0
+z = 2.0

@@ -36,6 +36,8 @@ use crate::lua::LuaEngine;
 use crate::runtime::actor_registry::ActorRegistry;
 use crate::world_manager::WorldManager;
 
+mod gm_tools;
+
 pub struct CommandProcessor {
     pub world: Arc<WorldManager>,
     pub registry: Arc<ActorRegistry>,
@@ -95,15 +97,35 @@ impl CommandProcessor {
             return Ok(String::new());
         }
         let mut tokens = trimmed.split_whitespace();
-        let cmd = tokens.next().unwrap_or("").to_lowercase();
+        let typed = tokens.next().unwrap_or("").to_lowercase();
+        // the FFXI server's names for commands this server has under another
+        let cmd = match typed.as_str() {
+            "where" => "pos",
+            "ver" => "version",
+            "raise" => "revive",
+            "kill" => "die",
+            "release" => "endevent",
+            "promote" => "setgm",
+            "homepoint" => "home",
+            "reloadglobal" => "reload",
+            "giveitem" => "additem",
+            "givekeyitem" => "addkeyitem",
+            "fixspeed" => "speed",
+            other => other,
+        }
+        .to_string();
         let perms = crate::command_permissions::get();
         if let Some(level) = level
             && level < perms.required(&cmd)
         {
             return Ok(format!("unknown command: !{cmd} (!help lists yours)"));
         }
-        let args = Args::new(tokens.collect::<Vec<&str>>(), invoker)
-            .self_only(level.is_some_and(|l| l < perms.target_others));
+        let mut rest: Vec<&str> = tokens.collect();
+        if typed == "fixspeed" {
+            rest.insert(0, "1"); // back to normal speed
+        }
+        let args =
+            Args::new(rest, invoker).self_only(level.is_some_and(|l| l < perms.target_others));
 
         let response = match cmd.as_str() {
             "help" => Self::help(level),
@@ -118,6 +140,36 @@ impl CommandProcessor {
             "setgm" => self.handle_setgm(&args, level).await,
             "pos" => self.handle_pos(&args).await,
             "endevent" => self.handle_endevent(&args).await,
+            "goto" => self.handle_goto(&args).await,
+            "bring" => self.handle_bring(&args).await,
+            "bringall" => self.handle_bringall(&args).await,
+            "send" => self.handle_send(&args).await,
+            "return" => self.handle_return(&args).await,
+            "up" => self.handle_updown(&args, 1.0).await,
+            "down" => self.handle_updown(&args, -1.0).await,
+            "posfix" => self.handle_posfix(&args).await,
+            "jail" => self.handle_jail(&args).await,
+            "pardon" => self.handle_pardon(&args).await,
+            "togglegm" => self.handle_togglegm(&args).await,
+            "logoff" => self.handle_logoff(&args).await,
+            "announce" => self.handle_announce(&args).await,
+            "getid" => self.handle_getid(&args).await,
+            "additem" => self.handle_additem(&args, false).await,
+            "addkeyitem" => self.handle_additem(&args, true).await,
+            "delitem" => self.handle_delitem(&args, false).await,
+            "delkeyitem" => self.handle_delitem(&args, true).await,
+            "hasitem" => self.handle_hasitem(&args, false).await,
+            "haskeyitem" => self.handle_hasitem(&args, true).await,
+            "setgil" => self.handle_gil(&args, true).await,
+            "takegil" => self.handle_gil(&args, false).await,
+            "addquest" => self.handle_quest(&args, "add").await,
+            "completequest" => self.handle_quest(&args, "complete").await,
+            "delquest" => self.handle_quest(&args, "del").await,
+            "addtitle" => self.handle_addtitle(&args).await,
+            "addeffect" => self.handle_addeffect(&args).await,
+            "addallaetherytes" => self.handle_addallaetherytes(&args).await,
+            "setmusic" => self.handle_setmusic(&args).await,
+            "setweather" => self.handle_setweather(&args).await,
             "revive" => self.handle_revive(&args).await,
             "home" => self.handle_home(&args).await,
             "sethome" => self.handle_set_home(&args).await,
@@ -156,6 +208,38 @@ impl CommandProcessor {
             "help",
             "who",
             "version",
+            "pos [name]",
+            "endevent [name]",
+            "goto <name>",
+            "bring <name>",
+            "bringall",
+            "send <name> to <name>",
+            "return [name]",
+            "up [yalms] [name]",
+            "down [yalms] [name]",
+            "posfix <name>",
+            "jail <name> [cell] [reason]",
+            "pardon <name>",
+            "togglegm [name]",
+            "logoff <name>",
+            "announce <message>",
+            "getid",
+            "additem <item id> [qty] [name]",
+            "delitem <item id> [qty] [name]",
+            "addkeyitem <id> [name]",
+            "delkeyitem <id> [name]",
+            "hasitem <item id> [name]",
+            "haskeyitem <id> [name]",
+            "setgil <amount> [name]",
+            "takegil <amount> [name]",
+            "addquest <quest id> [name]",
+            "completequest <quest id> [name]",
+            "delquest <quest id> [name]",
+            "addtitle <title id> [name]",
+            "addeffect <status id> [seconds] [name]",
+            "addallaetherytes [name]",
+            "setmusic <music id> [name]",
+            "setweather <weather id>",
             "zone <zone id or name> [name]",
             "camp [camp name] [name]",
             "warp <x> <y> <z> [name] | warp <zone> <x> <y> <z> [name]",
@@ -745,6 +829,21 @@ impl CommandProcessor {
         let Some(chara_id) = self.lookup_character_id(name).await else {
             return format!("unknown character: {name}");
         };
+        if explicit_zone.is_some_and(|z| z != crate::jail::get().zone)
+            && let Ok(Some(_)) = self.db.jail_of_character(chara_id).await
+        {
+            return format!("{name} is in Mordion Gaol: !pardon them first");
+        }
+        if let Some(h) = self.registry.get(chara_id).await {
+            let c = h.character.read().await;
+            gm_tools::remember_spot(
+                chara_id,
+                c.base.zone_id,
+                c.base.position_x,
+                c.base.position_y,
+                c.base.position_z,
+            );
+        }
         let Some(handle) = self.registry.get(chara_id).await else {
             return format!("{name} is not online");
         };
