@@ -161,12 +161,47 @@ fn lua_param_to_value(lua: &Lua, param: common::luaparam::LuaParam) -> mlua::Res
         LuaParam::Actor(id) => Value::Integer(id as mlua::Integer),
         LuaParam::Byte(b) => Value::Integer(b as mlua::Integer),
         LuaParam::Short(s) => Value::Integer(s as mlua::Integer),
-        // Type7/Type9 are exotic — director scripts that need them can read
-        // the raw u32/u64 fallbacks; for now we'd never hit this on the
-        // EventStart path, so log and forward Nil.
-        LuaParam::Type7 { actor_id, .. } => Value::Integer(actor_id as mlua::Integer),
-        LuaParam::Type9 { item1, .. } => Value::Integer(item1 as mlua::Integer),
+        // Meteor's ItemRefParam / Type9 objects: EquipCommand reads
+        // `equippedItem.itemPackage` / `.slot`, and `itemDBIds.item1`.
+        LuaParam::Type7 {
+            actor_id,
+            unknown,
+            slot,
+            inventory_type,
+        } => Value::Table(item_ref_table(
+            lua,
+            actor_id,
+            unknown,
+            slot,
+            inventory_type,
+        )?),
+        LuaParam::Type9 { item1, item2 } => Value::Table(item_ids_table(lua, item1, item2)?),
     })
+}
+
+/// Meteor `LuaUtils.ItemRefParam` as a table: actorId, unknown, slot,
+/// itemPackage (an item the client points at: its package and slot).
+pub(crate) fn item_ref_table(
+    lua: &Lua,
+    actor_id: u32,
+    unknown: u8,
+    slot: u8,
+    package: u8,
+) -> mlua::Result<mlua::Table> {
+    let t = lua.create_table()?;
+    t.set("actorId", actor_id)?;
+    t.set("unknown", unknown)?;
+    t.set("slot", slot)?;
+    t.set("itemPackage", package)?;
+    Ok(t)
+}
+
+/// Meteor's Type9 param (two item database ids) as a table: item1, item2.
+pub(crate) fn item_ids_table(lua: &Lua, item1: u64, item2: u64) -> mlua::Result<mlua::Table> {
+    let t = lua.create_table()?;
+    t.set("item1", item1)?;
+    t.set("item2", item2)?;
+    Ok(t)
 }
 
 pub struct LuaEngine {

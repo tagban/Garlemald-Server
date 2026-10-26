@@ -629,10 +629,25 @@ async fn dispatch_npc_event_started(
                         LuaParam::False => Value::Boolean(false),
                         LuaParam::Nil => Value::Nil,
                         LuaParam::Actor(id) => Value::Integer(*id as mlua::Integer),
-                        LuaParam::Type7 { actor_id, .. } => {
-                            Value::Integer(*actor_id as mlua::Integer)
-                        }
-                        LuaParam::Type9 { item1, .. } => Value::Integer(*item1 as mlua::Integer),
+                        LuaParam::Type7 {
+                            actor_id,
+                            unknown,
+                            slot,
+                            inventory_type,
+                        } => Value::Table(
+                            crate::lua::item_ref_table(
+                                lua_vm,
+                                *actor_id,
+                                *unknown,
+                                *slot,
+                                *inventory_type,
+                            )
+                            .map_err(|e| anyhow::anyhow!("item ref param: {e}"))?,
+                        ),
+                        LuaParam::Type9 { item1, item2 } => Value::Table(
+                            crate::lua::item_ids_table(lua_vm, *item1, *item2)
+                                .map_err(|e| anyhow::anyhow!("item ids param: {e}"))?,
+                        ),
                         LuaParam::Byte(b) => Value::Integer(*b as mlua::Integer),
                         LuaParam::Short(s) => Value::Integer(*s as mlua::Integer),
                     };
@@ -999,10 +1014,25 @@ async fn dispatch_director_event_started(
                         LuaParam::False => Value::Boolean(false),
                         LuaParam::Nil => Value::Nil,
                         LuaParam::Actor(id) => Value::Integer(*id as mlua::Integer),
-                        LuaParam::Type7 { actor_id, .. } => {
-                            Value::Integer(*actor_id as mlua::Integer)
-                        }
-                        LuaParam::Type9 { item1, .. } => Value::Integer(*item1 as mlua::Integer),
+                        LuaParam::Type7 {
+                            actor_id,
+                            unknown,
+                            slot,
+                            inventory_type,
+                        } => Value::Table(
+                            crate::lua::item_ref_table(
+                                lua_vm,
+                                *actor_id,
+                                *unknown,
+                                *slot,
+                                *inventory_type,
+                            )
+                            .map_err(|e| anyhow::anyhow!("item ref param: {e}"))?,
+                        ),
+                        LuaParam::Type9 { item1, item2 } => Value::Table(
+                            crate::lua::item_ids_table(lua_vm, *item1, *item2)
+                                .map_err(|e| anyhow::anyhow!("item ids param: {e}"))?,
+                        ),
                         LuaParam::Byte(b) => Value::Integer(*b as mlua::Integer),
                         LuaParam::Short(s) => Value::Integer(*s as mlua::Integer),
                     };

@@ -2313,10 +2313,9 @@ impl WorldManager {
         // the `DepictionJudge:judgeNameplate [?:900] attempt to index a
         // nil value` crash ~10s after zone-in.
         //
-        // Garlemald-Server #28: load the player's REAL equipped
-        // `(equip_slot, catalog_id)` pairs from
-        // `characters_inventory_equipment` (joined to `server_items` for
-        // the graphic id) and send them here. Previously this always
+        // Garlemald-Server #28: load the player's REAL equipped gear from
+        // `characters_inventory_equipment` as `(equip_slot, bag link)`
+        // pairs and send them here. Previously this always
         // passed an empty slice, so even a correctly-equipped player got
         // no weapon on the wire at zone-in — the client couldn't enter
         // Active mode and the SEQ_005 combat tutorial softlocked. A
