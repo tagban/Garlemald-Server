@@ -56,6 +56,9 @@ joins a server. Only a client reporting version `2012.09.19.0001` can connect.
   `settings/*.toml`, never in tracked files
 - **Modules:** optional features with Lua hooks and their own tables; `status`
   serves players online and recent characters as JSON for websites
+- **GM levels and chat commands:** `!zone`, `!camp`, `!warp` and more, each
+  given to a GM level (player to administrator) in `settings/commands.toml`;
+  see [settings/README.md](settings/README.md#gms-and-chat-commands)
 
 ## Project status
 

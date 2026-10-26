@@ -72,22 +72,50 @@ impl CommandProcessor {
     /// (`onTrigger(player, ...)` in `Data/scripts/commands/gm/*.lua`)
     /// and the optional `<targetname>` only overrides it.
     pub async fn run_as(&self, line: &str, invoker: Option<&str>) -> Result<String> {
+        self.run_checked(line, invoker, None).await
+    }
+
+    /// A command typed in chat by `invoker`, whose account has GM level
+    /// `level`: refused unless `settings/commands.toml` gives the command to
+    /// that level, and limited to the invoker themself below `target_others`
+    /// (crate::command_permissions).
+    pub async fn run_as_player(&self, line: &str, invoker: &str, level: u8) -> Result<String> {
+        self.run_checked(line, Some(invoker), Some(level)).await
+    }
+
+    /// `level`: None for the console, which isn't limited.
+    async fn run_checked(
+        &self,
+        line: &str,
+        invoker: Option<&str>,
+        level: Option<u8>,
+    ) -> Result<String> {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             return Ok(String::new());
         }
         let mut tokens = trimmed.split_whitespace();
         let cmd = tokens.next().unwrap_or("").to_lowercase();
-        let args = Args::new(tokens.collect::<Vec<&str>>(), invoker);
+        let perms = crate::command_permissions::get();
+        if let Some(level) = level
+            && level < perms.required(&cmd)
+        {
+            return Ok(format!("unknown command: !{cmd} (!help lists yours)"));
+        }
+        let args = Args::new(tokens.collect::<Vec<&str>>(), invoker)
+            .self_only(level.is_some_and(|l| l < perms.target_others));
 
         let response = match cmd.as_str() {
-            "help" => Self::help(),
+            "help" => Self::help(level),
             "version" => format!("map-server {}", env!("CARGO_PKG_VERSION")),
             "who" => format!("{} zone(s) loaded", self.world.zone_count().await),
             "reload" => {
                 let n = self.lua.reload_scripts();
                 format!("reloaded: {n} lua script(s) dropped from cache")
             }
+            "zone" => self.handle_zone(&args).await,
+            "camp" => self.handle_camp(&args).await,
+            "setgm" => self.handle_setgm(&args, level).await,
             "revive" => self.handle_revive(&args).await,
             "home" => self.handle_home(&args).await,
             "sethome" => self.handle_set_home(&args).await,
@@ -114,29 +142,64 @@ impl CommandProcessor {
             "speed" => self.handle_speed(&args).await,
             other => format!("unknown command: {other} (args={:?})", args.rest()),
         };
+        if args.was_refused() {
+            return Ok(format!("!{cmd} works only on yourself at your GM level"));
+        }
         Ok(response)
     }
 
-    fn help() -> String {
-        "commands: help, who, version, reload, \
-         revive <name>, home <name>, sethome <aetheryte_id> <name>, \
-         die <name>, givegil <qty> <name>, \
-         giveexp <qty> <class_id> <name>, \
-         hireretainer <retainer_id> <name>, \
-         dismissretainer <retainer_id> <name>, \
-         listretainers <name>, \
-         setsleeping <name>, dream <id> <name>, wake <name>, \
-         accruerest <minutes> <name>, \
-         issuechocobo <appearance> <chocobo_name> <player_name>, \
-         rentchocobo <minutes> <name>, dismount <name>, \
-         joingc <gc> <name>, setgcrank <gc> <rank> <name>, \
-         addgcseals <gc> <amount> <name>, \
-         warp <x> <y> <z> [name], warp <zone> <x> <y> <z> [name], \
-         talkto <actor_class_id> <name>, \
-         pushtrigger <actor_class_id> <name>, \
-         setseq <quest_id> <sequence> <name>, \
-         speed <multiplier> [name]"
-            .into()
+    /// The commands `level` may use (all of them on the console).
+    fn help(level: Option<u8>) -> String {
+        const ALL: &[&str] = &[
+            "help",
+            "who",
+            "version",
+            "zone <zone id or name> [name]",
+            "camp [camp name] [name]",
+            "warp <x> <y> <z> [name] | warp <zone> <x> <y> <z> [name]",
+            "home [name]",
+            "revive [name]",
+            "speed <multiplier> [name]",
+            "dismount [name]",
+            "wake [name]",
+            "givegil <qty> [name]",
+            "giveexp <qty> <class_id> [name]",
+            "sethome <aetheryte_id> [name]",
+            "joingc <gc> [name]",
+            "setgcrank <gc> <rank> [name]",
+            "addgcseals <gc> <amount> [name]",
+            "accruerest <minutes> [name]",
+            "issuechocobo <appearance> <chocobo_name> [name]",
+            "rentchocobo <minutes> [name]",
+            "hireretainer <retainer_id> [name]",
+            "dismissretainer <retainer_id> [name]",
+            "listretainers [name]",
+            "setsleeping [name]",
+            "dream <id> [name]",
+            "die [name]",
+            "setgm <level 0-4> <name>",
+            "reload",
+            "talkto <actor_class_id> [name]",
+            "pushtrigger <actor_class_id> [name]",
+            "setseq <quest_id> <sequence> [name]",
+        ];
+        let perms = crate::command_permissions::get();
+        let mine: Vec<&str> = ALL
+            .iter()
+            .filter(|c| {
+                let name = c.split_whitespace().next().unwrap_or("");
+                level.is_none_or(|l| l >= perms.required(name))
+            })
+            .copied()
+            .collect();
+        match level {
+            Some(l) => format!(
+                "your level: {} ({l}). commands: {}",
+                crate::command_permissions::level_name(l),
+                mine.join(", ")
+            ),
+            None => format!("commands: {}", mine.join(", ")),
+        }
     }
 
     async fn handle_revive(&self, args: &Args<'_>) -> String {
@@ -651,7 +714,33 @@ impl CommandProcessor {
         let Some(name) = name else {
             return USAGE.into();
         };
-        let Some(chara_id) = self.lookup_character_id(&name).await else {
+        self.teleport(
+            &name,
+            explicit_zone,
+            private_area,
+            private_area_type,
+            x,
+            y,
+            z,
+        )
+        .await
+    }
+
+    /// Move `name` (online) to (x, y, z) in `explicit_zone` (None: their
+    /// current zone), optionally into a private area: the same zone change a
+    /// GM warp makes in retail (spawn type 2).
+    #[allow(clippy::too_many_arguments)]
+    async fn teleport(
+        &self,
+        name: &str,
+        explicit_zone: Option<u32>,
+        private_area: Option<String>,
+        private_area_type: u32,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> String {
+        let Some(chara_id) = self.lookup_character_id(name).await else {
             return format!("unknown character: {name}");
         };
         let Some(handle) = self.registry.get(chara_id).await else {
@@ -729,6 +818,173 @@ impl CommandProcessor {
             .await;
         }
         format!("warped {name} to zone {zone_id} at ({x:.2}, {y:.2}, {z:.2})")
+    }
+
+    /// `zone <zone id or name> [name]`: to a zone's spawn point (or beside
+    /// its aetheryte, or where its first NPC stands).
+    async fn handle_zone(&self, args: &Args<'_>) -> String {
+        const USAGE: &str = "usage: zone <zone id or name> [name]";
+        if args.len() == 0 {
+            return USAGE.into();
+        }
+        // the zone is the first token, or a quoted-free run of words up to a
+        // name that is online: try the longest zone query first
+        for split in (1..=args.len()).rev() {
+            let query = args.rest()[..split].join(" ");
+            let Ok(zones) = self.db.zones_matching(&query).await else {
+                return "zone lookup failed".into();
+            };
+            if zones.is_empty() {
+                continue;
+            }
+            let Some(name) = args.rest_joined(split) else {
+                return if args.was_refused() {
+                    String::new()
+                } else {
+                    USAGE.into()
+                };
+            };
+            // an id, or one place name: several zones can share a name (two
+            // "Limsa Lominsa" areas), so the first of them with a known spot
+            let by_id = zones.iter().find(|(id, _)| id.to_string() == query);
+            let same_place: Vec<&(u32, String)> = match by_id {
+                Some(z) => vec![z],
+                None => {
+                    let exact: Vec<_> = zones
+                        .iter()
+                        .filter(|(_, p)| p.eq_ignore_ascii_case(&query))
+                        .collect();
+                    if !exact.is_empty() {
+                        exact
+                    } else if zones
+                        .iter()
+                        .all(|(_, p)| p.eq_ignore_ascii_case(&zones[0].1))
+                    {
+                        zones.iter().collect()
+                    } else {
+                        Vec::new()
+                    }
+                }
+            };
+            let mut chosen = None;
+            for z in &same_place {
+                if matches!(self.db.zone_landing(z.0).await, Ok(Some(_))) {
+                    chosen = Some((*z).clone());
+                    break;
+                }
+            }
+            let (zone_id, place) = match chosen.or_else(|| same_place.first().map(|z| (*z).clone()))
+            {
+                Some(z) => z,
+                None => {
+                    let list: Vec<String> = zones
+                        .iter()
+                        .take(8)
+                        .map(|(id, p)| format!("{id} {p}"))
+                        .collect();
+                    return format!(
+                        "more than one zone matches \"{query}\": {}",
+                        list.join(", ")
+                    );
+                }
+            };
+            return match self.db.zone_landing(zone_id).await {
+                Ok(Some((x, y, z))) => {
+                    let r = self.teleport(&name, Some(zone_id), None, 0, x, y, z).await;
+                    if r.starts_with("warped") {
+                        format!("{name} → {place} (zone {zone_id})")
+                    } else {
+                        r
+                    }
+                }
+                Ok(None) => format!(
+                    "no known spot in zone {zone_id} ({place}); use !warp {zone_id} <x> <y> <z>"
+                ),
+                Err(e) => format!("zone lookup failed: {e}"),
+            };
+        }
+        format!("no zone matches \"{}\"", args.rest()[0])
+    }
+
+    /// `camp [camp name] [name]`: to an aetheryte camp or gate by name (or
+    /// aetheryte id); with no name, the list.
+    async fn handle_camp(&self, args: &Args<'_>) -> String {
+        use crate::actor::aetheryte::{AETHERYTE_NAMES, named_matching};
+        if args.len() == 0 {
+            let camps: Vec<&str> = AETHERYTE_NAMES
+                .iter()
+                .map(|(_, n)| *n)
+                .filter(|n| n.starts_with("Camp "))
+                .collect();
+            return format!(
+                "camps: {} (and the aetheryte gates around them: !camp <part of a name>)",
+                camps.join(", ")
+            );
+        }
+        for split in (1..=args.len()).rev() {
+            let query = args.rest()[..split].join(" ");
+            let hits = named_matching(&query);
+            if hits.is_empty() {
+                continue;
+            }
+            if hits.len() > 1 {
+                let list: Vec<&str> = hits.iter().take(8).map(|(_, n)| *n).collect();
+                return format!("more than one matches \"{query}\": {}", list.join(", "));
+            }
+            let Some(name) = args.rest_joined(split) else {
+                return if args.was_refused() {
+                    String::new()
+                } else {
+                    "usage: camp <camp name> [name]".into()
+                };
+            };
+            let (a, camp) = hits[0];
+            let r = self
+                .teleport(&name, Some(a.zone_id), None, 0, a.x, a.y, a.z)
+                .await;
+            return if r.starts_with("warped") {
+                format!("{name} → {camp}")
+            } else {
+                r
+            };
+        }
+        format!(
+            "no camp or aetheryte matches \"{}\" (!camp lists the camps)",
+            args.rest().join(" ")
+        )
+    }
+
+    /// `setgm <level 0-4> <name>`: the GM level of `name`'s account. Nobody
+    /// can grant a level above their own (the console can grant any).
+    async fn handle_setgm(&self, args: &Args<'_>, invoker_level: Option<u8>) -> String {
+        const USAGE: &str = "usage: setgm <level 0-4> <name> (0 player, 1 helper, 2 GM, 3 senior GM, 4 administrator)";
+        let level = match args.parse_u8(0) {
+            Ok(l) if l <= crate::command_permissions::ADMINISTRATOR => l,
+            _ => return USAGE.into(),
+        };
+        if args.len() < 2 {
+            return USAGE.into();
+        }
+        let name = args.rest()[1..].join(" ");
+        if let Some(mine) = invoker_level
+            && level > mine
+        {
+            return format!("you can't grant a level above your own ({mine})");
+        }
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        match self.db.set_gm_level_of_character(chara_id, level).await {
+            Ok(true) => {
+                tracing::info!(character = %name, level, by = ?args.invoker, "GM level set");
+                format!(
+                    "{name}'s account is now level {level} ({})",
+                    crate::command_permissions::level_name(level)
+                )
+            }
+            Ok(false) => format!("{name} has no account"),
+            Err(e) => format!("couldn't set the level: {e}"),
+        }
     }
 
     async fn handle_join_gc(&self, args: &Args<'_>) -> String {
@@ -1206,11 +1462,29 @@ struct Args<'a> {
     /// the `!command` chat path. `None` on the stdin console, where
     /// there is no implicit target and `<name>` stays mandatory.
     invoker: Option<&'a str>,
+    /// The invoker's GM level is below `target_others`: a name other than
+    /// their own is refused (`rest_joined` returns None and sets `refused`).
+    self_only: bool,
+    refused: std::sync::atomic::AtomicBool,
 }
 
 impl<'a> Args<'a> {
     fn new(tokens: Vec<&'a str>, invoker: Option<&'a str>) -> Self {
-        Self { tokens, invoker }
+        Self {
+            tokens,
+            invoker,
+            self_only: false,
+            refused: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn self_only(mut self, yes: bool) -> Self {
+        self.self_only = yes;
+        self
+    }
+
+    fn was_refused(&self) -> bool {
+        self.refused.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn len(&self) -> usize {
@@ -1266,7 +1540,17 @@ impl<'a> Args<'a> {
         if from >= self.tokens.len() {
             return self.invoker.map(str::to_string);
         }
-        Some(self.tokens[from..].join(" "))
+        let name = self.tokens[from..].join(" ");
+        if self.self_only
+            && !self
+                .invoker
+                .is_some_and(|me| me.eq_ignore_ascii_case(&name))
+        {
+            self.refused
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            return None;
+        }
+        Some(name)
     }
 }
 
@@ -1375,6 +1659,42 @@ mod tests {
         let (cmd, _db) = fixture().await;
         let out = cmd.run("revive Nobody").await.unwrap();
         assert_eq!(out, "unknown character: Nobody");
+    }
+
+    #[test]
+    fn below_target_others_only_yourself() {
+        let args = Args::new(vec!["2", "Other", "Player"], Some("First Last")).self_only(true);
+        assert_eq!(args.rest_joined(1), None);
+        assert!(args.was_refused());
+        let args = Args::new(vec!["2", "first", "last"], Some("First Last")).self_only(true);
+        assert_eq!(args.rest_joined(1).as_deref(), Some("first last"));
+        let args = Args::new(vec!["2"], Some("First Last")).self_only(true);
+        assert_eq!(args.rest_joined(1).as_deref(), Some("First Last"));
+        assert!(!args.was_refused());
+    }
+
+    #[test]
+    fn help_lists_only_what_the_level_may_use() {
+        // without settings every command needs administrator
+        let player = CommandProcessor::help(Some(0));
+        assert!(player.starts_with("your level: player (0)") && !player.contains("givegil"));
+        let console = CommandProcessor::help(None);
+        assert!(console.contains("givegil") && console.contains("zone <zone id or name>"));
+    }
+
+    #[test]
+    fn camps_match_by_part_of_their_name() {
+        use crate::actor::aetheryte::named_matching;
+        let hits = named_matching("bearded rock");
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].1, hits[0].0.zone_id), ("Camp Bearded Rock", 128));
+        assert_eq!(named_matching("Camp Black Brush")[0].1, "Camp Black Brush");
+        assert_eq!(
+            named_matching("revenants toll")[0].1,
+            "Camp Revenant's Toll"
+        );
+        assert!(named_matching("zzz").is_empty());
+        assert!(named_matching("lake").len() > 1);
     }
 
     #[test]

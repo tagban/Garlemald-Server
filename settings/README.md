@@ -34,3 +34,44 @@ port        = 54992
 ```
 
 Forward TCP 54992-54994 on your router to the host; never forward 1989.
+
+## GMs and chat commands
+
+Players type commands in chat, starting with `!` (`!zone gridania`). What each
+account may use is its GM level against `settings/commands.toml`:
+
+| Level | Name | Gets, by default |
+| --- | --- | --- |
+| 0 | player | `!help`, `!who`, `!version` |
+| 1 | helper | the same (give helpers commands by lowering them to 1) |
+| 2 | GM | moving players: `!zone`, `!camp`, `!warp`, `!home`, `!revive`, `!speed` |
+| 3 | senior GM | changing characters: `!givegil`, `!giveexp`, grand companies, retainers |
+| 4 | administrator | `!setgm`, `!reload`, quest debugging; and any command not listed |
+
+Below `target_others` (GM by default) a command only works on whoever typed
+it. `!help` shows each player the commands they have.
+
+**Making the first administrator:** the map server's console isn't limited.
+With `host.sh` (or `run-all.sh`), write to its GM FIFO:
+
+```sh
+echo "setgm 4 Your Name" > logs/map-server.gm.fifo
+```
+
+After that, `!setgm <level> <name>` in game; nobody can grant a level above
+their own. Levels belong to the account, so all its characters share one.
+
+**Giving players a command:** lower it in `settings/commands.toml`, for
+example to let everyone teleport to camps (not retail behavior, so off by
+default):
+
+```toml
+[levels]
+camp = 0
+```
+
+| Command | Does |
+| --- | --- |
+| `!zone <zone id or name> [name]` | To a zone's spawn point, or beside its aetheryte (`!zone central shroud`, `!zone 155`) |
+| `!camp [camp name] [name]` | To an aetheryte camp or gate by part of its name (`!camp bearded rock`); alone, lists the camps |
+| `!setgm <level> <name>` | Set the GM level of a character's account |

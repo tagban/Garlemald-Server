@@ -3564,6 +3564,106 @@ impl Database {
         Ok(id)
     }
 
+    /// The GM level of the account `character_id` belongs to (seed 103;
+    /// 0 when the character or account is unknown).
+    pub async fn gm_level_of_character(&self, character_id: u32) -> Result<u8> {
+        let v = self
+            .conn
+            .call_db(move |c| {
+                let v: Option<i64> = c
+                    .query_row(
+                        "SELECT u.gmLevel FROM characters ch JOIN users u ON u.id = ch.userId WHERE ch.id = :c",
+                        named_params! { ":c": character_id },
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                Ok(v.unwrap_or(0))
+            })
+            .await?;
+        Ok(v.clamp(0, 255) as u8)
+    }
+
+    /// Set the GM level of the account `character_id` belongs to. Returns
+    /// false when there is no such character.
+    pub async fn set_gm_level_of_character(&self, character_id: u32, level: u8) -> Result<bool> {
+        let n = self
+            .conn
+            .call_db(move |c| {
+                c.execute(
+                    "UPDATE users SET gmLevel = :l WHERE id = (SELECT userId FROM characters WHERE id = :c)",
+                    named_params! { ":c": character_id, ":l": level },
+                )
+            })
+            .await?;
+        Ok(n > 0)
+    }
+
+    /// Zones whose id is `query`, or whose place name (Limsa Lominsa, Central
+    /// Shroud) or internal name (sea0Town01) contains it, ignoring case: (id,
+    /// place name), the exact place-name matches first.
+    pub async fn zones_matching(&self, query: &str) -> Result<Vec<(u32, String)>> {
+        let q = query.trim().to_owned();
+        let rows = self
+            .conn
+            .call_db(move |c| {
+                let mut st = c.prepare(
+                    r"SELECT id, placeName FROM server_zones
+                      WHERE CAST(id AS TEXT) = :q OR placeName LIKE '%' || :q || '%' OR zoneName LIKE '%' || :q || '%'
+                      ORDER BY (CAST(id AS TEXT) = :q) DESC, (placeName = :q COLLATE NOCASE) DESC, id",
+                )?;
+                st.query_map(named_params! { ":q": q }, |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .await?;
+        Ok(rows)
+    }
+
+    /// Where to put a player arriving in `zone_id` by command: the zone's own
+    /// spawn point (server_zones_spawnlocations), else beside its aetheryte,
+    /// else where its first NPC stands. None if the server knows no spot.
+    pub async fn zone_landing(&self, zone_id: u32) -> Result<Option<(f32, f32, f32)>> {
+        let spot = self
+            .conn
+            .call_db(move |c| {
+                let v: Option<(f32, f32, f32)> = c
+                    .query_row(
+                        r"SELECT spawnX, spawnY, spawnZ FROM server_zones_spawnlocations
+                          WHERE zoneId = :z AND (privateAreaName IS NULL OR privateAreaName = '')
+                          ORDER BY id LIMIT 1",
+                        named_params! { ":z": zone_id },
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .optional()?;
+                Ok(v)
+            })
+            .await?;
+        if spot.is_some() {
+            return Ok(spot);
+        }
+        if let Some(a) = crate::actor::aetheryte::AETHERYTE_SPAWNS
+            .iter()
+            .find(|a| a.zone_id == zone_id)
+        {
+            return Ok(Some((a.x, a.y, a.z)));
+        }
+        let npc = self
+            .conn
+            .call_db(move |c| {
+                let v: Option<(f32, f32, f32)> = c
+                    .query_row(
+                        r"SELECT positionX, positionY, positionZ FROM server_spawn_locations
+                          WHERE zoneId = :z AND (privateAreaName IS NULL OR privateAreaName = '')
+                          ORDER BY id LIMIT 1",
+                        named_params! { ":z": zone_id },
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .optional()?;
+                Ok(v)
+            })
+            .await?;
+        Ok(npc)
+    }
+
     /// Persist the migration-051 SNpc / Path Companion scratchpad
     /// (`snpc_nickname`, `snpc_skin`, `snpc_personality`,
     /// `snpc_coordinate`) for a player. Called from
