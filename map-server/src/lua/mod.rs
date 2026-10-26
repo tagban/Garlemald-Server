@@ -1320,6 +1320,43 @@ impl LuaEngine {
         all_commands
     }
 
+    /// Resume player `owner`'s coroutines parked on `signal`, handing them
+    /// `value` as `waitForSignal`'s return (Meteor `OnSignal(name, value)`,
+    /// e.g. `ls_result`). Returns the commands they queued, for the caller
+    /// to apply; a coroutine that yields again is re-parked.
+    pub fn fire_owner_signal_and_drain(
+        &self,
+        owner: u32,
+        signal: &str,
+        value: i64,
+    ) -> Vec<LuaCommand> {
+        let due = self
+            .scheduler
+            .lock()
+            .map(|mut s| s.drain_signal_for(signal, owner))
+            .unwrap_or_default();
+        tracing::debug!(signal, owner, value, resumed = due.len(), "owner signal");
+        let mut all_commands = Vec::new();
+        for parked in due {
+            let queue = parked.queue.clone();
+            self.repoint_globals_for_resume(&parked);
+            let resume = parked.thread.resume::<MultiValue>(value);
+            all_commands.extend(CommandQueue::drain(&queue));
+            match resume {
+                Ok(v) => {
+                    if matches!(parked.thread.status(), mlua::ThreadStatus::Resumable) {
+                        let directive = scheduler::classify_yield_mv(&v);
+                        self.repark(parked, directive);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(signal, owner, error = %e, "owner signal: coroutine errored")
+                }
+            }
+        }
+        all_commands
+    }
+
     /// Notify the scheduler that `signal` fired, resuming every coroutine
     /// parked on it via [`Self::fire_signal_and_drain`] (commands discarded).
     pub fn fire_signal(&self, signal: &str) {

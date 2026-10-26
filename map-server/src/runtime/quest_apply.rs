@@ -274,6 +274,36 @@ pub async fn apply_runtime_lua_command(
             apply_unlock_aetheryte(player_id, aetheryte_id, registry, db, world).await;
             true
         }
+        // The linkshell NPC (crate::linkshells). Creation answers the
+        // script waiting on `ls_result` with Meteor's result code.
+        LC::LinkshellCreate {
+            player_id,
+            name,
+            crest,
+        } => {
+            let code =
+                crate::linkshells::create(registry, world, db, player_id, &name, crest).await;
+            if let Some(lua) = lua {
+                let cmds = lua.fire_owner_signal_and_drain(player_id, "ls_result", code);
+                Box::pin(crate::event::dispatcher::apply_resumed_event_commands(
+                    player_id, cmds, registry, world, db, lua,
+                ))
+                .await;
+            }
+            true
+        }
+        LC::LinkshellCrestModify {
+            player_id,
+            name,
+            crest,
+        } => {
+            crate::linkshells::change_crest(registry, world, db, player_id, &name, crest).await;
+            true
+        }
+        LC::LinkshellDelete { player_id, name } => {
+            crate::linkshells::disband(registry, world, db, player_id, &name).await;
+            true
+        }
         // `player:SendGameMessageLocalizedDisplayName(...)` — the NPC
         // linkshell narration line (0x0161 DispId-sender family).
         LC::SendGameMessageLocalizedDisplayName {

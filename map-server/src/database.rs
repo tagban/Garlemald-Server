@@ -3437,25 +3437,213 @@ impl Database {
     // Linkshells, support tickets, FAQ, chocobo, status save
     // =======================================================================
 
+    /// Create a linkshell with `master` as its master member (rank 0xA):
+    /// Ok(None) if the name is taken. The crest goes to `crestIcon`, the
+    /// column the world server reads (and `crest`, which some old copies of
+    /// the schema use).
     pub async fn create_linkshell(
         &self,
-        chara_id: u32,
-        ls_name: &str,
-        ls_crest: u16,
-    ) -> Result<bool> {
-        let ls_name = ls_name.to_owned();
-        let ok = self
-            .conn
+        master: u32,
+        name: &str,
+        crest: u16,
+    ) -> Result<Option<u64>> {
+        let name = name.to_owned();
+        self.conn
             .call_db(move |c| {
-                let r = c.execute(
-                    r"INSERT INTO server_linkshells (name, master, crest)
-                      VALUES (:name, :master, :crest)",
-                    named_params! { ":name": ls_name, ":master": chara_id, ":crest": ls_crest },
-                );
-                Ok(r.is_ok())
+                let tx = c.transaction()?;
+                let taken: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM server_linkshells WHERE name = :n COLLATE NOCASE)",
+                    named_params! { ":n": name },
+                    |r| r.get(0),
+                )?;
+                if taken {
+                    return Ok(None);
+                }
+                let has_crest: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('server_linkshells') WHERE name = 'crest')",
+                    [],
+                    |r| r.get(0),
+                )?;
+                if has_crest {
+                    tx.execute(
+                        "INSERT INTO server_linkshells (name, crestIcon, crest, master, rank) VALUES (:n, :c, :c, :m, 1)",
+                        named_params! { ":n": name, ":c": crest, ":m": master },
+                    )?;
+                } else {
+                    tx.execute(
+                        "INSERT INTO server_linkshells (name, crestIcon, master, rank) VALUES (:n, :c, :m, 1)",
+                        named_params! { ":n": name, ":c": crest, ":m": master },
+                    )?;
+                }
+                let id = tx.last_insert_rowid() as u64;
+                tx.execute(
+                    "INSERT INTO characters_linkshells (characterId, linkshellId, rank) VALUES (:p, :l, 10)",
+                    named_params! { ":p": master, ":l": id as i64 },
+                )?;
+                tx.commit()?;
+                Ok(Some(id))
             })
-            .await?;
-        Ok(ok)
+            .await
+    }
+
+    /// (id, name, crest, master, rank) of every linkshell `character_id`
+    /// belongs to.
+    pub async fn linkshells_of_character(
+        &self,
+        character_id: u32,
+    ) -> Result<Vec<(u64, String, u16, u32, u8)>> {
+        self.conn
+            .call_db(move |c| {
+                let mut st = c.prepare(
+                    r"SELECT l.id, l.name, l.crestIcon, l.master, l.rank FROM characters_linkshells cl
+                      JOIN server_linkshells l ON l.id = cl.linkshellId
+                      WHERE cl.characterId = :p ORDER BY l.id",
+                )?;
+                st.query_map(named_params! { ":p": character_id }, |r| {
+                    Ok((
+                        r.get::<_, i64>(0)? as u64,
+                        r.get(1)?,
+                        r.get::<_, i64>(2)? as u16,
+                        r.get::<_, i64>(3)? as u32,
+                        r.get::<_, i64>(4)?.clamp(0, 255) as u8,
+                    ))
+                })?
+                .collect()
+            })
+            .await
+    }
+
+    /// (id, name, crest, master, rank) of the linkshell called `name`.
+    pub async fn linkshell_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<(u64, String, u16, u32, u8)>> {
+        let name = name.to_owned();
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT id, name, crestIcon, master, rank FROM server_linkshells WHERE name = :n COLLATE NOCASE",
+                    named_params! { ":n": name },
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)? as u64,
+                            r.get(1)?,
+                            r.get::<_, i64>(2)? as u16,
+                            r.get::<_, i64>(3)? as u32,
+                            r.get::<_, i64>(4)?.clamp(0, 255) as u8,
+                        ))
+                    },
+                )
+                .optional()
+            })
+            .await
+    }
+
+    /// (id, name, crest, master, rank) of linkshell `id`.
+    pub async fn linkshell_by_id(&self, id: u64) -> Result<Option<(u64, String, u16, u32, u8)>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT id, name, crestIcon, master, rank FROM server_linkshells WHERE id = :l",
+                    named_params! { ":l": id as i64 },
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)? as u64,
+                            r.get(1)?,
+                            r.get::<_, i64>(2)? as u16,
+                            r.get::<_, i64>(3)? as u32,
+                            r.get::<_, i64>(4)?.clamp(0, 255) as u8,
+                        ))
+                    },
+                )
+                .optional()
+            })
+            .await
+    }
+
+    /// (character id, rank, name) of each member of linkshell `id`, the
+    /// master first.
+    pub async fn linkshell_members(&self, id: u64) -> Result<Vec<(u32, u8, String)>> {
+        self.conn
+            .call_db(move |c| {
+                let mut st = c.prepare(
+                    r"SELECT cl.characterId, cl.rank, ch.name FROM characters_linkshells cl
+                      JOIN characters ch ON ch.id = cl.characterId
+                      WHERE cl.linkshellId = :l ORDER BY cl.rank DESC, ch.name",
+                )?;
+                st.query_map(named_params! { ":l": id as i64 }, |r| {
+                    Ok((
+                        r.get::<_, i64>(0)? as u32,
+                        r.get::<_, i64>(1)?.clamp(0, 255) as u8,
+                        r.get(2)?,
+                    ))
+                })?
+                .collect()
+            })
+            .await
+    }
+
+    pub async fn set_linkshell_crest(&self, id: u64, crest: u16) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    "UPDATE server_linkshells SET crestIcon = :c WHERE id = :l",
+                    named_params! { ":c": crest, ":l": id as i64 },
+                )?;
+                let _ = c.execute(
+                    "UPDATE server_linkshells SET crest = :c WHERE id = :l",
+                    named_params! { ":c": crest, ":l": id as i64 },
+                );
+                Ok(())
+            })
+            .await
+    }
+
+    /// Delete linkshell `id` and its memberships; whoever had it active
+    /// has no active linkshell after.
+    pub async fn delete_linkshell(&self, id: u64, name: &str) -> Result<()> {
+        let name = name.to_owned();
+        self.conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                tx.execute("DELETE FROM characters_linkshells WHERE linkshellId = :l", named_params! { ":l": id as i64 })?;
+                tx.execute("DELETE FROM server_linkshells WHERE id = :l", named_params! { ":l": id as i64 })?;
+                tx.execute(
+                    "UPDATE characters SET currentActiveLinkshell = '' WHERE currentActiveLinkshell = :n",
+                    named_params! { ":n": name },
+                )?;
+                tx.commit()
+            })
+            .await
+    }
+
+    /// The name of the character's active linkshell ('' for none).
+    pub async fn active_linkshell(&self, character_id: u32) -> Result<String> {
+        self.conn
+            .call_db(move |c| {
+                Ok(c.query_row(
+                    "SELECT currentActiveLinkshell FROM characters WHERE id = :p",
+                    named_params! { ":p": character_id },
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten()
+                .unwrap_or_default())
+            })
+            .await
+    }
+
+    pub async fn set_active_linkshell(&self, character_id: u32, name: &str) -> Result<()> {
+        let name = name.to_owned();
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    "UPDATE characters SET currentActiveLinkshell = :n WHERE id = :p",
+                    named_params! { ":n": name, ":p": character_id },
+                )?;
+                Ok(())
+            })
+            .await
     }
 
     /// Gil on hand for `chara_id`: the `itemId = 1_000_001` stack at

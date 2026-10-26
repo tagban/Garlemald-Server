@@ -53,6 +53,7 @@ mod group;
 mod inventory;
 mod jail;
 mod leve;
+mod linkshells;
 mod modules;
 // The Lua content runtime is the one surface the in-process test harnesses
 // (e.g. the `content-test` quest-walkthrough exe) link against.
