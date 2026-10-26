@@ -2133,6 +2133,23 @@ pub(crate) async fn apply_do_zone_change(
     world: &WorldManager,
     lua: Option<&Arc<LuaEngine>>,
 ) {
+    // A jailed character (crate::jail) only goes to their gaol cell: a
+    // teleport, a script or a GM command can't take them out before !pardon.
+    let jail_zone = crate::jail::get().zone;
+    let (zone_id, private_area, private_area_type, x, y, z) =
+        match db.jail_of_character(player_id).await {
+            Ok(Some((cell, _))) if zone_id != jail_zone => {
+                let c = crate::jail::cell(cell);
+                tracing::info!(
+                    player = player_id,
+                    from_dest = zone_id,
+                    cell,
+                    "jailed: zone change sent to the gaol instead"
+                );
+                (jail_zone, None, 0, c.x, c.y, c.z)
+            }
+            _ => (zone_id, private_area, private_area_type, x, y, z),
+        };
     let Some(handle) = registry.get(player_id).await else {
         tracing::warn!(player = player_id, "DoZoneChange: actor missing");
         return;

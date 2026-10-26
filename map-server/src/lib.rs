@@ -48,8 +48,10 @@ mod director;
 mod event;
 mod gamedata;
 mod gathering;
+mod gm_tags;
 mod group;
 mod inventory;
+mod jail;
 mod leve;
 mod modules;
 // The Lua content runtime is the one surface the in-process test harnesses
@@ -123,7 +125,8 @@ pub async fn run() -> Result<()> {
 
     match common::modules::enabled().and_then(|m| {
         modules::init(&m);
-        command_permissions::init()
+        command_permissions::init()?;
+        jail::init()
     }) {
         Ok(()) => {}
         Err(e) => {

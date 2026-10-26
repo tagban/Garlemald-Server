@@ -200,7 +200,7 @@ impl PacketProcessor {
         //    exists in the .csproj but is never instantiated. Sending one
         //    leaves the client's handshake state machine in a bad spot
         //    ("Now Loading" forever, no LanguageCode).
-        let loaded = match self.db.load_player_character(session_id).await {
+        let mut loaded = match self.db.load_player_character(session_id).await {
             Ok(Some(row)) => row,
             Ok(None) => {
                 tracing::warn!(session = session_id, "no character row for session");
@@ -211,6 +211,23 @@ impl PacketProcessor {
                 return Ok(());
             }
         };
+
+        // A jailed character logs in in their gaol cell (crate::jail).
+        if let Ok(Some((cell, _))) = self.db.jail_of_character(session_id).await {
+            let c = crate::jail::cell(cell);
+            loaded.current_zone_id = crate::jail::get().zone;
+            (loaded.position_x, loaded.position_y, loaded.position_z) = (c.x, c.y, c.z);
+            loaded.current_private_area = String::new();
+            tracing::info!(
+                session = session_id,
+                cell,
+                "jailed character logging in: held in the gaol"
+            );
+        }
+        // The GM icon, for a GM whose tag is on (crate::gm_tags).
+        if let Ok((level, tag)) = self.db.gm_status_of_character(session_id).await {
+            crate::gm_tags::set(session_id, tag && level >= crate::gm_tags::TAG_LEVEL);
+        }
 
         // `chara_id` == session id in this server's lobby flow.
         let actor_id = session_id;
@@ -636,6 +653,7 @@ impl PacketProcessor {
                 );
             }
         }
+        crate::gm_tags::set(session_id, false);
         self.registry.remove_session(session_id).await;
         self.world.remove_session(session_id).await;
         let reply = tx::build_session_end(session_id, 1, 0);
@@ -1022,6 +1040,36 @@ impl PacketProcessor {
     /// engine or when the zone ships no zone.lua (the common case).
     /// (Garlemald-Server #46, round 4.)
     async fn run_zone_on_zone_in_hook(&self, handle: &ActorHandle, session_id: u32, zone_id: u32) {
+        // a jailed character who got out (a teleport, a script) goes back
+        let jail_zone = crate::jail::get().zone;
+        if zone_id != jail_zone
+            && let Ok(Some((cell, _))) = self.db.jail_of_character(session_id).await
+        {
+            let c = crate::jail::cell(cell);
+            let rotation = handle.character.read().await.base.rotation;
+            tracing::info!(
+                session = session_id,
+                cell,
+                "jailed character left the gaol; returning them"
+            );
+            crate::runtime::quest_apply::apply_do_zone_change(
+                handle.actor_id,
+                jail_zone,
+                None,
+                0,
+                2,
+                c.x,
+                c.y,
+                c.z,
+                rotation,
+                &self.registry,
+                &self.db,
+                &self.world,
+                self.lua.as_ref(),
+            )
+            .await;
+            return;
+        }
         let Some(engine) = self.lua.as_ref() else {
             return;
         };
@@ -10032,12 +10080,46 @@ impl PacketProcessor {
     // ---------------------------------------------------------------
 
     async fn handle_chat_message(&self, session_id: u32, data: &[u8]) -> Result<()> {
-        let Ok(pkt) = ChatMessagePacket::parse(data) else {
+        let Ok(mut pkt) = ChatMessagePacket::parse(data) else {
             return Ok(());
         };
+        // Leading spaces go (the Space that opens the chat field can end up
+        // in the text), so " !help" is still a command.
+        let lead = pkt.raw_message.iter().take_while(|&&b| b == b' ').count();
+        pkt.raw_message.drain(..lead);
+        pkt.message = pkt.message.trim_start().to_string();
+        // "!!" is chat, not a command: one "!" comes off and the rest is said
+        // as typed ("!!zone gridania" shows "!zone gridania"), for telling
+        // players which commands to use.
+        let literal = pkt.message.starts_with("!!");
+        if literal {
+            pkt.message.remove(0);
+            if !pkt.raw_message.is_empty() {
+                pkt.raw_message.remove(0);
+            }
+        }
         let Some(handle) = self.registry.by_session(session_id).await else {
             return Ok(());
         };
+
+        // In Mordion Gaol (crate::jail): no commands, and only /say.
+        if let Ok(Some(_)) = self.db.jail_of_character(session_id).await {
+            let kind = message_type_from_u32(pkt.log_type);
+            if (!literal && pkt.message.starts_with('!')) || !matches!(kind, ChatKind::Say) {
+                let mut ob = SocialOutbox::new();
+                ob.push(SocialEvent::ChatSystemToPlayer {
+                    target_actor_id: handle.actor_id,
+                    kind: ChatKind::SystemError,
+                    message:
+                        "You are in Mordion Gaol: only /say reaches anyone until a GM releases you."
+                            .into(),
+                });
+                for e in ob.drain() {
+                    dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
+                }
+                return Ok(());
+            }
+        }
 
         // GM `!command` shortcut — eat the message on match. When we
         // have a CommandProcessor handle, dispatch the message verbatim
@@ -10045,7 +10127,7 @@ impl PacketProcessor {
         // This turns in-game chat into an auxiliary GM console — useful
         // since `run-all.sh`-backgrounded map-servers have stdin tied
         // to /dev/null so the stdin path is dead in practice.
-        if pkt.message.starts_with('!') {
+        if !literal && pkt.message.starts_with('!') {
             // auto-translate entries (Tab) arrive as bytes `message` drops
             let text = crate::autotranslate::command_text(&pkt.raw_message);
             let line = text.strip_prefix('!').unwrap_or(&text).to_string();

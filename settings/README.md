@@ -77,6 +77,52 @@ camp = 0
 | `!zone <zone id or name> [name]` | To a zone's spawn point, or beside its aetheryte (`!zone central shroud`, `!zone 155`, `!zone mordion`) |
 | `!camp [camp name] [name]` | To an aetheryte camp or gate by part of its name (`!camp bearded rock`); alone, lists the camps |
 | `!setgm <level> <name>` | Set the GM level of a character's account |
+| `!togglegm [name]` | The GM icon over your head on or off (shows from GM level 2; on by default) |
+| `!jail <First Last> [cell] [reason]` / `!pardon <name>` | Hold someone in a Mordion Gaol cell (see below) / release them to their home city |
+| `!goto <name>` / `!bring <name>` / `!bringall` | To someone / someone to you / everyone online to you |
+| `!send <name> to <name>` / `!return [name]` | One player to another / back to where the last command moved them from |
+| `!up [yalms] [name]` / `!down [yalms] [name]` | Straight up or down (5 yalms by default) |
+| `!posfix <name>` | To their home city; works offline, for someone who can't log in where they are |
+| `!logoff <name>` / `!announce <message>` | Disconnect someone / a message to everyone online |
+| `!getid` | What you have targeted: actor id, class, name, position |
+| `!additem` `!delitem` `!hasitem <item id> [qty] [name]` | Items (catalog ids) |
+| `!addkeyitem` `!delkeyitem` `!haskeyitem <id> [name]` | Key items |
+| `!setgil` `!takegil <amount> [name]` | Gil |
+| `!addquest` `!completequest` `!delquest <quest id> [name]` | Quests |
+| `!addtitle <id>` `!addeffect <status id> [seconds]` `!addallaetherytes` | Titles, status effects, every aetheryte |
+| `!setmusic <id> [name]` / `!setweather <id>` | Music for someone / weather for your zone |
+
+The FFXI server's names work too: `!where`, `!ver`, `!raise`, `!kill`,
+`!release`, `!promote`, `!homepoint`, `!giveitem`, `!givekeyitem`,
+`!fixspeed`, `!reloadglobal`.
+
+**Chat:** leading spaces are ignored, so ` !help` is a command. Start a line
+with `!!` to say a command without running it: `!!zone gridania` shows
+"!zone gridania" to everyone, for telling players what to type.
+
+### Mordion Gaol
+
+`!jail` holds a character in a gaol cell: they're put back there if they log
+in, teleport or are moved out, can't use commands, and only /say reaches
+anyone, until `!pardon`. The cells are in `settings/jail.toml`; the shipped
+file has one (2, 2, 2). To add cells, stand in each one, use `!pos`, and list
+them in order in your `settings/jail.toml`:
+
+```toml
+[[cells]]
+x = 2.0
+y = 2.0
+z = 2.0
+
+[[cells]]
+x = 12.5
+y = 2.0
+z = -4.0
+```
+
+Where you arrive in the gaol has depended on the zone you came from (from
+Gridania the stone cells, from Limsa Lominsa a dark cave), so check each cell
+from a couple of places.
 
 Names don't need typing in full: any part works (`!camp bent`, a `*` is
 fine too), case and apostrophes don't matter (`!zone uldah`), several

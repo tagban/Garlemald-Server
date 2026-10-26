@@ -1619,7 +1619,7 @@ pub(crate) async fn spawn_bundle_fanout(
         tx::actor::build_set_actor_state(actor_id, state, 0).to_bytes(),
         tx::actor::build_set_actor_sub_state(actor_id, 0, 0, 0, 0, 0, 0).to_bytes(),
         tx::actor::build_set_actor_status_all(actor_id, &[0u16; 20]).to_bytes(),
-        tx::actor::build_set_actor_icon(actor_id, 0).to_bytes(),
+        tx::actor::build_set_actor_icon(actor_id, crate::gm_tags::icon(actor_id)).to_bytes(),
         tx::actor::build_set_actor_is_zoning(actor_id, false).to_bytes(),
     ];
     for bytes in packets {
