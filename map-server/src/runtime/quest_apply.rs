@@ -304,6 +304,62 @@ pub async fn apply_runtime_lua_command(
             crate::linkshells::disband(registry, world, db, player_id, &name).await;
             true
         }
+        LC::LinkshellInvite {
+            player_id,
+            name,
+            invitee,
+        } => {
+            crate::linkshells::invite(registry, world, db, player_id, &name, invitee).await;
+            true
+        }
+        LC::LinkshellInviteCancel { player_id } => {
+            crate::linkshells::cancel_invite(registry, world, player_id).await;
+            true
+        }
+        LC::LinkshellLeave { player_id, name } => {
+            crate::linkshells::leave(registry, world, db, player_id, &name).await;
+            true
+        }
+        LC::LinkshellKick {
+            player_id,
+            name,
+            kicked,
+        } => {
+            crate::linkshells::kick(registry, world, db, player_id, &name, &kicked).await;
+            true
+        }
+        LC::LinkshellChangeActive { player_id, name } => {
+            crate::linkshells::change_active(registry, world, db, player_id, &name).await;
+            true
+        }
+        LC::LinkshellRankChange {
+            player_id,
+            name,
+            member,
+            rank,
+        } => {
+            crate::linkshells::change_rank(registry, world, db, player_id, &name, &member, rank)
+                .await;
+            true
+        }
+        // 0x2712: a linkshell offer; party offers (0x2711) aren't handled here yet
+        LC::GroupInviteResult {
+            player_id,
+            group_type,
+            result,
+        } => {
+            if group_type == 0x2712 {
+                crate::linkshells::invite_result(registry, world, db, player_id, result).await;
+            } else {
+                tracing::info!(
+                    player = player_id,
+                    group_type,
+                    result,
+                    "group invite result for a group this server doesn't handle yet"
+                );
+            }
+            true
+        }
         // `player:SendGameMessageLocalizedDisplayName(...)` — the NPC
         // linkshell narration line (0x0161 DispId-sender family).
         LC::SendGameMessageLocalizedDisplayName {

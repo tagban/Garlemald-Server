@@ -671,6 +671,42 @@ pub enum LuaCommand {
         player_id: u32,
         name: String,
     },
+    /// The linkshell commands (LinkshellInviteCommand and the rest):
+    /// offer a linkpearl to `invitee` (an actor id).
+    LinkshellInvite {
+        player_id: u32,
+        name: String,
+        invitee: u32,
+    },
+    LinkshellInviteCancel {
+        player_id: u32,
+    },
+    LinkshellLeave {
+        player_id: u32,
+        name: String,
+    },
+    LinkshellKick {
+        player_id: u32,
+        name: String,
+        kicked: String,
+    },
+    LinkshellChangeActive {
+        player_id: u32,
+        name: String,
+    },
+    LinkshellRankChange {
+        player_id: u32,
+        name: String,
+        member: String,
+        rank: u8,
+    },
+    /// `WorldManager:GroupInviteResult(player, groupType, result)`
+    /// (ConfirmGroupCommand): 1 accept, 2 decline.
+    GroupInviteResult {
+        player_id: u32,
+        group_type: u32,
+        result: u32,
+    },
     /// `characters.homepoint`).
     UnlockAetheryte {
         player_id: u32,

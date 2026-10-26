@@ -956,6 +956,39 @@ pub fn build_set_active_linkshell(source_actor_id: u32, group_id: u64) -> SubPac
     SubPacket::new(OP_SET_ACTIVE_LINKSHELL, source_actor_id, data)
 }
 
+/// One work value for [`build_synch_group_work_values_entries`]: Meteor's
+/// type byte (1 byte, 2 short, 4 int, 8 long), the property path, its value.
+pub struct WorkValue {
+    pub kind: u8,
+    pub name: String,
+    pub value: Vec<u8>,
+}
+
+/// 0x017A SynchGroupWorkValues with the given values (a single packet; for
+/// short lists such as a relation group's host and command).
+pub fn build_synch_group_work_values_entries(
+    source_actor_id: u32,
+    group_id: u64,
+    values: &[WorkValue],
+    target: &str,
+) -> SubPacket {
+    let mut data = body(0xB0);
+    data[..8].copy_from_slice(&group_id.to_le_bytes());
+    let mut pos = 9;
+    for v in values {
+        data[pos] = v.kind;
+        data[pos + 1..pos + 5]
+            .copy_from_slice(&common::utils::murmur_hash2(&v.name, 0).to_le_bytes());
+        data[pos + 5..pos + 5 + v.value.len()].copy_from_slice(&v.value);
+        pos += 5 + v.value.len();
+    }
+    data[pos] = 0x82 + target.len() as u8;
+    data[pos + 1..pos + 1 + target.len()].copy_from_slice(target.as_bytes());
+    pos += 1 + target.len();
+    data[8] = (pos - 9) as u8;
+    SubPacket::new(OP_SYNCH_GROUP_WORK_VALUES, source_actor_id, data)
+}
+
 /// 0x017A SynchGroupWorkValues for a linkshell: Meteor
 /// `Linkshell.SendInitWorkValues` / `ResendWorkValues` —
 /// `work._globalSave.master` (long), `work._globalSave.crestIcon[0]`
