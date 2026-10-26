@@ -36,6 +36,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 mod achievement;
 mod actor;
+mod autotranslate;
 mod battle;
 mod command_permissions;
 mod command_processor;

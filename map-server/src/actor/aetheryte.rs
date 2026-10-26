@@ -763,7 +763,7 @@ pub static AETHERYTE_NAMES: &[(u32, &str)] = &[
 pub fn named_matching(query: &str) -> Vec<(&'static AetheryteSpawn, &'static str)> {
     let norm = |s: &str| {
         s.to_lowercase()
-            .replace(['\'', '’'], "")
+            .replace(['\'', '’', '*'], "")
             .trim_start_matches("camp ")
             .trim()
             .to_string()

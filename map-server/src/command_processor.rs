@@ -116,6 +116,8 @@ impl CommandProcessor {
             "zone" => self.handle_zone(&args).await,
             "camp" => self.handle_camp(&args).await,
             "setgm" => self.handle_setgm(&args, level).await,
+            "pos" => self.handle_pos(&args).await,
+            "endevent" => self.handle_endevent(&args).await,
             "revive" => self.handle_revive(&args).await,
             "home" => self.handle_home(&args).await,
             "sethome" => self.handle_set_home(&args).await,
@@ -850,16 +852,14 @@ impl CommandProcessor {
             let same_place: Vec<&(u32, String)> = match by_id {
                 Some(z) => vec![z],
                 None => {
+                    let bare = |t: &str| t.replace(['\'', '’'], "").to_lowercase();
                     let exact: Vec<_> = zones
                         .iter()
-                        .filter(|(_, p)| p.eq_ignore_ascii_case(&query))
+                        .filter(|(_, p)| bare(p) == bare(&query))
                         .collect();
                     if !exact.is_empty() {
                         exact
-                    } else if zones
-                        .iter()
-                        .all(|(_, p)| p.eq_ignore_ascii_case(&zones[0].1))
-                    {
+                    } else if zones.iter().all(|(_, p)| bare(p) == bare(&zones[0].1)) {
                         zones.iter().collect()
                     } else {
                         Vec::new()
@@ -903,7 +903,18 @@ impl CommandProcessor {
                 Err(e) => format!("zone lookup failed: {e}"),
             };
         }
-        format!("no zone matches \"{}\"", args.rest()[0])
+        // nothing matched: the closest place name, for a typo
+        let typed = args.rest().join(" ");
+        match self.db.zones_matching("").await {
+            Ok(all) => match closest(
+                &typed,
+                all.iter().map(|(_, p)| p.as_str()).filter(|p| p.len() > 1),
+            ) {
+                Some(best) => format!("no zone matches \"{typed}\"; did you mean {best}?"),
+                None => format!("no zone matches \"{typed}\""),
+            },
+            Err(_) => format!("no zone matches \"{typed}\""),
+        }
     }
 
     /// `camp [camp name] [name]`: to an aetheryte camp or gate by name (or
@@ -948,10 +959,92 @@ impl CommandProcessor {
                 r
             };
         }
+        let typed = args.rest().join(" ");
+        match closest(&typed, AETHERYTE_NAMES.iter().map(|(_, n)| *n)) {
+            Some(best) => format!("no camp or aetheryte matches \"{typed}\"; did you mean {best}?"),
+            None => format!("no camp or aetheryte matches \"{typed}\" (!camp lists the camps)"),
+        }
+    }
+
+    /// `pos [name]`: the zone and coordinates of `name` (default: you), to
+    /// note a spot and come back with `warp`.
+    async fn handle_pos(&self, args: &Args<'_>) -> String {
+        let Some(name) = args.rest_joined(0) else {
+            return if args.was_refused() {
+                String::new()
+            } else {
+                "usage: pos <name>".into()
+            };
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        let Some(handle) = self.registry.get(chara_id).await else {
+            return format!("{name} is not online");
+        };
+        let (zone_id, x, y, z, rot) = {
+            let c = handle.character.read().await;
+            (
+                c.base.zone_id,
+                c.base.position_x,
+                c.base.position_y,
+                c.base.position_z,
+                c.base.rotation,
+            )
+        };
+        let place = match self.db.zones_matching(&zone_id.to_string()).await {
+            Ok(z) => z
+                .into_iter()
+                .find(|(id, _)| *id == zone_id)
+                .map(|(_, p)| p)
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        };
         format!(
-            "no camp or aetheryte matches \"{}\" (!camp lists the camps)",
-            args.rest().join(" ")
+            "{name}: zone {zone_id} {place} at {x:.2} {y:.2} {z:.2} facing {rot:.2} (!warp {zone_id} {x:.2} {y:.2} {z:.2})"
         )
+    }
+
+    /// `endevent [name]`: end whatever event (talk, cutscene, menu) holds
+    /// `name`, as the script's own `player:EndEvent()` would, and drop any
+    /// script paused waiting on it.
+    async fn handle_endevent(&self, args: &Args<'_>) -> String {
+        let Some(name) = args.rest_joined(0) else {
+            return if args.was_refused() {
+                String::new()
+            } else {
+                "usage: endevent <name>".into()
+            };
+        };
+        let Some(chara_id) = self.lookup_character_id(&name).await else {
+            return format!("unknown character: {name}");
+        };
+        let Some(handle) = self.registry.get(chara_id).await else {
+            return format!("{name} is not online");
+        };
+        let purged = self
+            .lua
+            .scheduler()
+            .lock()
+            .map(|mut s| s.purge_owner(handle.actor_id))
+            .unwrap_or(0);
+        let mut outbox = crate::event::outbox::EventOutbox::new();
+        {
+            let mut c = handle.character.write().await;
+            c.event_session.end_event(handle.actor_id, &mut outbox);
+        }
+        for e in outbox.drain() {
+            crate::event::dispatcher::dispatch_event_event(
+                &e,
+                &self.registry,
+                &self.world,
+                &self.db,
+                Some(&self.lua),
+            )
+            .await;
+        }
+        tracing::info!(player = %name, purged, by = ?args.invoker, "event ended by command");
+        format!("ended {name}'s event")
     }
 
     /// `setgm <level 0-4> <name>`: the GM level of `name`'s account. Nobody
@@ -1452,6 +1545,43 @@ enum TargetLookup {
     Err(String),
 }
 
+/// The name in `names` closest to `typed` (edit distance, ignoring case,
+/// apostrophes and a leading "camp "), if it's close enough to be a typo:
+/// two letters wrong (a swapped pair is two), or a third of a long name.
+fn closest<'n>(typed: &str, names: impl Iterator<Item = &'n str>) -> Option<&'n str> {
+    let norm = |t: &str| {
+        t.to_lowercase()
+            .replace(['\'', '’'], "")
+            .trim_start_matches("camp ")
+            .to_string()
+    };
+    let t = norm(typed);
+    if t.is_empty() {
+        return None;
+    }
+    let dist = |a: &str, b: &str| {
+        let b: Vec<char> = b.chars().collect();
+        let mut row: Vec<usize> = (0..=b.len()).collect();
+        for (i, ca) in a.chars().enumerate() {
+            let mut prev = row[0];
+            row[0] = i + 1;
+            for j in 0..b.len() {
+                let cur = row[j + 1];
+                row[j + 1] = (prev + usize::from(ca != b[j]))
+                    .min(row[j] + 1)
+                    .min(cur + 1);
+                prev = cur;
+            }
+        }
+        row[b.len()]
+    };
+    names
+        .map(|n| (dist(&t, &norm(n)), n))
+        .min_by_key(|(d, _)| *d)
+        .filter(|(d, _)| *d <= (t.chars().count() / 3).max(2))
+        .map(|(_, n)| n)
+}
+
 /// Tiny typed-arg shim. The C# `CommandProcessor` punts arg parsing to
 /// each command's own handler — we keep the same per-command contract
 /// but centralise the "index + parse + error message" plumbing so each
@@ -1683,6 +1813,18 @@ mod tests {
     }
 
     #[test]
+    fn closest_name_catches_typos() {
+        let names = ["Gridania", "Ul'dah", "Central Shroud", "Camp Bearded Rock"];
+        assert_eq!(closest("gridnia", names.iter().copied()), Some("Gridania"));
+        assert_eq!(closest("uldha", names.iter().copied()), Some("Ul'dah"));
+        assert_eq!(
+            closest("bearded rok", names.iter().copied()),
+            Some("Camp Bearded Rock")
+        );
+        assert_eq!(closest("xyz", names.iter().copied()), None);
+    }
+
+    #[test]
     fn camps_match_by_part_of_their_name() {
         use crate::actor::aetheryte::named_matching;
         let hits = named_matching("bearded rock");
@@ -1695,6 +1837,7 @@ mod tests {
         );
         assert!(named_matching("zzz").is_empty());
         assert!(named_matching("lake").len() > 1);
+        assert_eq!(named_matching("bent*")[0].1, "Camp Bentbranch");
     }
 
     #[test]
