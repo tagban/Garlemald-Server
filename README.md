@@ -4,58 +4,67 @@
 [![Rust](https://img.shields.io/badge/rust-1.95-orange.svg)](rust-toolchain.toml)
 
 A server for **FINAL FANTASY XIV v1.23b**, the final patch of the original
-1.0 release (not *A Realm Reborn*), written in Rust and being built into a game
-server you can host for real players: one authority for who is online,
-optional modules, a database with enforced relationships, and a target of 100
-players at once. See [docs/DESIGN.md](docs/DESIGN.md) for the plan and its
-progress.
+1.0 release (not *A Realm Reborn*), written in Rust.
 
-Players connect with the
-[XIVLegacy launcher](https://github.com/tagban/xivlegacy-launcher), which sets
-up the 1.23b client from the original disc and patches and joins a server.
-Only a client reporting version `2012.09.19.0001` can connect.
-
-XIVLegacy Server is a fork of
+**Where it comes from.** XIVLegacy Server is derived from the original
+community server work: it is a fork of
 [Garlemald Server](https://github.com/swstegall/Garlemald-Server) by Samuel
 Stegall, itself a Rust port of
 [Project Meteor Server](https://bitbucket.org/Ioncannon/project-meteor-server/).
 The lobby, world and map services, the 1.x wire protocol, the Blowfish-keyed
 session handshake and the Lua content system come from there, under the same
-AGPL-3.0 license. Fixes that apply to Garlemald are still offered upstream.
+AGPL-3.0 license, and fixes that apply to Garlemald are still offered
+upstream.
+
+**Where it's going.** Two goals, kept apart on purpose:
+
+- **Retail accuracy in the core.** The game should behave the way 1.23b did in
+  2012: its quests, combat, monsters, drops, notorious monsters and economy.
+  When the core and retail disagree, the core is wrong.
+- **Quality of life in modules.** Anything that isn't retail behavior (a
+  welcome message, a status page for your website, a Discord bridge, faster
+  travel, conveniences for a small community) goes in an optional
+  [module](modules/README.md) that each server operator chooses to turn on.
+
+Underneath, it is being rebuilt into a server you can host for real players:
+one authority for who is online, settings that never touch tracked files, a
+database with enforced relationships, and a target of 100 players at once. See
+[docs/DESIGN.md](docs/DESIGN.md) for the plan and its progress.
+
+Players connect with the
+[XIVLegacy launcher](https://github.com/tagban/xivlegacy-launcher) (Windows and
+macOS), which sets up the 1.23b client from the original disc and patches and
+joins a server. Only a client reporting version `2012.09.19.0001` can connect.
 
 ## Highlights
 
-- Four-binary Cargo workspace — `lobby-server`, `world-server`,
-  `map-server`, and `web-server` — sharing one `common` crate for
-  protocol, packet log, database, and Lua bindings
-- Byte-for-byte compatible with the 1.23b client: PE patch, ZiPatch
-  archives, TCP + Blowfish framing, 1.x opcodes, actor-spawn fields,
-  FACEINFO bitfield, motion packs, and the full Director /
-  ContentArea / PrivateArea / Zone / Weather state machines
-- **1,142 Lua scripts** loaded at boot via [`mlua`](https://github.com/mlua-rs/mlua)
-  5.4 — quests, directors, shops, aetherytes, populace, elevators,
-  commands — with a coroutine scheduler that honours the upstream
-  `_WAIT_TIME` / `_WAIT_SIGNAL` yield idioms
-- **SQLite-backed** via `tokio-rusqlite`; the full schema is created
-  and seeded from 40 bundled SQL files on first run, with migration
-  tracking in a `schema_migrations` table — no external database
-  server to provision
-- **TOML configuration** (`configs/{lobby,world,map,web}.toml`) in
-  place of the upstream INI files, with localhost defaults that boot
-  straight into a playable single-user server
-- Argon2-hashed account storage, session-token handoff between the
-  web frontend and the lobby, and env-gated per-server packet logging
-  for protocol debugging
+- Four services in one Cargo workspace (`web-server`, `lobby-server`,
+  `world-server`, `map-server`) sharing a `common` crate for protocol, packet
+  log, database, settings and modules
+- Compatible with the 1.23b client byte for byte: TCP + Blowfish framing, 1.x
+  opcodes, actor spawn fields, and the Director / ContentArea / PrivateArea /
+  Zone / Weather state machines
+- **1,142 Lua scripts** (quests, directors, shops, aetherytes, populace,
+  commands) run by [`mlua`](https://github.com/mlua-rs/mlua) 5.4, with a
+  coroutine scheduler for the upstream `_WAIT_TIME` / `_WAIT_SIGNAL` idioms
+- **SQLite** with no database server to install: the schema is created and
+  seeded on first run, with numbered migrations tracked in `schema_migrations`
+- **Sessions:** the world server keeps `world_sessions`, the one record of who
+  is in the game (one character per account), cleared at start-up and
+  refreshed every 30 s so a crash never leaves ghosts
+- **Settings:** shipped defaults in `settings/default/`, your changes in
+  `settings/*.toml`, never in tracked files
+- **Modules:** optional features with Lua hooks and their own tables; `status`
+  serves players online and recent characters as JSON for websites
 
 ## Project status
 
-This is an **in-progress port**, not a finished product. Account
-flow, character create/select, zone loading, NPC and monster spawn,
-chat, movement, guildleves, and status effects are working end-to-end
-against a retail 1.23b client. Combat damage formulae, stat recalc,
-inventory event dispatch, level/XP, and the quest-reward pipeline are
-partially implemented. See `porting-progress-context.md` in the parent
-workspace for the subsystem status matrix and roadmap.
+Account flow, character creation and selection, zones, NPC and monster
+spawns, chat, movement, guildleves and status effects work end to end with the
+1.23b client. Combat formulas, stat recalculation, levels and experience, and
+the quest reward pipeline are partly done. The rebuild's phases (sessions,
+modules, the relational monster/drop/NM schema, MariaDB, load testing) are
+tracked in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Architecture
 
@@ -119,32 +128,49 @@ stack on localhost. Add `127.0.0.1` as a server in the
 [XIVLegacy launcher](https://github.com/tagban/xivlegacy-launcher), then use
 Create Account and Join.
 
-## Configuration
+## Settings
 
-Each service reads its own TOML file under `configs/`. All four share
-the same SQLite database by default.
+Each service reads `settings/default/<name>.toml` (shipped, don't edit) with
+your overrides from `settings/<name>.toml` on top, holding only what differs.
+See [settings/README.md](settings/README.md), including what to change to host
+for players on the internet.
 
-| Service       | Config               | Default bind      | Notes                                                      |
-|---------------|----------------------|-------------------|------------------------------------------------------------|
-| `web-server`  | `configs/web.toml`   | `127.0.0.1:54993` | Signup / login; issues session tokens                      |
-| `lobby-server`| `configs/lobby.toml` | `127.0.0.1:54994` | Character list and world handoff                           |
-| `world-server`| `configs/world.toml` | `127.0.0.1:54992` | World registration (`world_id` keyed to `configs/servers.toml`) |
-| `map-server`  | `configs/map.toml`   | `127.0.0.1:1989`  | Zone, actor, AI, and Lua host                              |
+| Service | Settings | Default bind | Does |
+|---|---|---|---|
+| `web-server` | `web` | `127.0.0.1:54993` | Sign-up and sign-in; the `status` module's `GET /status` |
+| `lobby-server` | `lobby` | `127.0.0.1:54994` | Character list and the hand-off to a world |
+| `world-server` | `world` | `127.0.0.1:54992` | Sessions, routing to the map server, cross-zone chat, parties, linkshells |
+| `map-server` | `map` | `127.0.0.1:1989` | Zones, actors, combat, AI and the Lua scripts |
 
-Override any config path with `--config <path>` on the corresponding
-binary. Environment knobs (packet logging, Lua script root, etc.) are
-documented in each `configs/*.toml` file.
+The worlds shown at character select are `servers`, and the enabled modules
+`modules`. `--config <file>` on a service names a different override file.
+
+## Modules
+
+Turn optional features on in `settings/modules.toml`:
+
+```toml
+enabled = ["status", "welcome"]
+```
+
+| Module | Default | Does |
+|---|---|---|
+| [status](modules/status/) | on | `GET /status`: players online and recently active characters with their starting city, for websites such as moghouse.cc |
+| [welcome](modules/welcome/) | off | A welcome message as players enter the world; an example to copy |
+
+Writing one: [modules/README.md](modules/README.md).
 
 ## Layout
 
 ```
-garlemald-server/
-├── common/            # Protocol, packet log, db, Lua bindings (shared crate)
+xivlegacy-server/
+├── common/            # Protocol, packet log, db, settings, modules (shared crate)
 ├── lobby-server/      # Lobby / character list binary
 ├── world-server/      # World registration / handoff binary
 ├── map-server/        # Zone / actor / AI / Lua host binary
 ├── web-server/        # axum HTTP signup + login binary
-├── configs/           # Per-service TOML configs (localhost defaults)
+├── settings/          # default/: shipped settings; your overrides beside them
+├── modules/           # Optional features (status, welcome, ...)
 ├── scripts/
 │   ├── run-*.sh       # Build + launch helpers (bash and .cmd variants)
 │   └── lua/           # 1,142 upstream Lua scripts — quests, directors, shops, ...
@@ -203,21 +229,9 @@ under which this project is distributed.
 
 ## Related projects
 
-- **[meteor-decomp](https://github.com/swstegall/meteor-decomp)** —
-  clean-room decompilation of the FFXIV 1.23b Windows client binaries,
-  producing byte-identical recompiles and validated wire-protocol
-  ground truth.
-- **[decomp-agents](https://github.com/swstegall/decomp-agents)** —
-  parallel autonomous Claude agents that grind through meteor-decomp's
-  per-function matching workflow via a shared claim queue.
-- **[Garlemald Client](https://github.com/swstegall/Garlemald-Client)** —
-  cross-platform Rust launcher that speaks this server's lobby / patch
-  handshake and manages its own Wine runtime on macOS and Linux.
-- **[XIV 1.0 Apple Silicon Installer](https://github.com/swstegall/XIV-1.0-Apple-Silicon-Installer)** —
-  bash installer that stands up a working 1.23b client on Apple
-  Silicon Macs, which the client above can then drive against this
-  server.
-- **[XIV 1.0 Linux Installer](https://github.com/swstegall/XIV-1.0-Linux-Installer)** —
-  one-command installer that stands up a working 1.23b client on x86_64
-  Linux across distributions — the counterpart to the Apple Silicon
-  installer above.
+- **[XIVLegacy launcher](https://github.com/tagban/xivlegacy-launcher)**: the
+  client for Windows and macOS, a native build of the 1.23b client with an
+  installer for the game files.
+- **[meteor-decomp](https://github.com/swstegall/meteor-decomp)**: a
+  clean-room decompilation of the 1.23b client, the ground truth for the wire
+  protocol.

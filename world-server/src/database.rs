@@ -562,8 +562,9 @@ impl Database {
                 let tx = c.transaction()?;
                 let now = now_s();
                 {
-                    let mut stmt =
-                        tx.prepare("UPDATE world_sessions SET last_seen_at = :now WHERE character_id = :c")?;
+                    let mut stmt = tx.prepare(
+                        "UPDATE world_sessions SET last_seen_at = :now WHERE character_id = :c",
+                    )?;
                     for id in character_ids {
                         stmt.execute(named_params! { ":c": id, ":now": now })?;
                     }
@@ -622,7 +623,8 @@ mod tests {
 
     #[tokio::test]
     async fn world_sessions_follow_the_lifecycle() {
-        let path = std::env::temp_dir().join(format!("xivl-world-sessions-{}.db", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("xivl-world-sessions-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let db = Database::open(&path).await.unwrap();
         db.conn_for_test()
@@ -639,21 +641,41 @@ mod tests {
         assert_eq!(db.begin_world_session(session(10, 1)).await.unwrap(), None);
         assert_eq!(db.begin_world_session(session(20, 2)).await.unwrap(), None);
         db.world_session_in_world(10).await.unwrap();
-        assert_eq!(rows(&db).await, vec![(10, "in_world".into(), 1), (20, "connecting".into(), 2)]);
+        assert_eq!(
+            rows(&db).await,
+            vec![(10, "in_world".into(), 1), (20, "connecting".into(), 2)]
+        );
 
         // the same account with its other character: one row, the first character named
-        assert_eq!(db.begin_world_session(session(11, 3)).await.unwrap(), Some(10));
-        assert_eq!(rows(&db).await, vec![(11, "connecting".into(), 3), (20, "connecting".into(), 2)]);
+        assert_eq!(
+            db.begin_world_session(session(11, 3)).await.unwrap(),
+            Some(10)
+        );
+        assert_eq!(
+            rows(&db).await,
+            vec![(11, "connecting".into(), 3), (20, "connecting".into(), 2)]
+        );
 
         // a reconnect of a character: the old connection's disconnect leaves the new session
         db.begin_world_session(session(20, 4)).await.unwrap();
         assert!(!db.end_world_session(20, 2).await.unwrap());
-        db.world_session_zoning(20, Some((155, "127.0.0.1:1990".into()))).await.unwrap();
-        assert_eq!(rows(&db).await, vec![(11, "connecting".into(), 3), (20, "zoning".into(), 4)]);
+        db.world_session_zoning(20, Some((155, "127.0.0.1:1990".into())))
+            .await
+            .unwrap();
+        assert_eq!(
+            rows(&db).await,
+            vec![(11, "connecting".into(), 3), (20, "zoning".into(), 4)]
+        );
         assert!(db.end_world_session(20, 4).await.unwrap());
         let last: Option<i64> = db
             .conn_for_test()
-            .call_db(|c| c.query_row("SELECT lastActiveAt FROM characters WHERE id = 20", [], |r| r.get(0)))
+            .call_db(|c| {
+                c.query_row(
+                    "SELECT lastActiveAt FROM characters WHERE id = 20",
+                    [],
+                    |r| r.get(0),
+                )
+            })
             .await
             .unwrap();
         assert!(last.is_some_and(|t| t > 1_700_000_000));

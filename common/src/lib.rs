@@ -33,6 +33,7 @@ pub mod logging;
 pub mod luaparam;
 pub mod math;
 pub mod migrations;
+pub mod modules;
 pub mod packet;
 pub mod packet_diagnostics;
 pub mod packet_log;

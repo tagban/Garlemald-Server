@@ -217,13 +217,34 @@ tick time and players online on a metrics endpoint.
 
 | Phase | Work | Done when |
 | --- | --- | --- |
-| 0 | Rename to XIVLegacy Server; settings defaults and overrides | Hosting needs no edits to tracked files |
-| 1 | Sessions table and lifecycle; `last_active_at`; the module loader; the `status` module | Online count and recent players are correct across logins, crashes and restarts |
+| 0 ✅ | Rename to XIVLegacy Server; settings defaults and overrides | Hosting needs no edits to tracked files |
+| 1 ✅ | Sessions table and lifecycle; `last_active_at`; the module loader; the `status` module | Online count and recent players are correct across logins, crashes and restarts |
 | 2 | Database layer, foreign keys, the NPC, monster, drop and notorious-monster schema with migration | The game runs on the new tables; drops and NMs work |
 | 3 | World as the authority: routing by `zones.map_server`, cross-zone chat, tells and parties through world | Two map processes can share the zones |
 | 4 | MariaDB backend and `dbtool` | The same tests pass on both databases |
 | 5 | Load-test client and metrics | 100 bots hold a steady tick |
 | 6 | Docker, CI and backups | A host can deploy and update it from the docs |
+
+## Progress notes
+
+**Phases 0 and 1 (October 2026).** Settings, sessions, modules and the
+`status` module are in, tested with the 1.23b client: a login shows up in
+`GET /status` and in `world_sessions`, a disconnect removes the row and stamps
+`characters.lastActiveAt`, and a killed world server's rows are cleared when it
+starts again. Where it differs from the plan above:
+
+- The table is `world_sessions` (`sessions` already holds web sign-in tokens),
+  with a `conn_seq` column so a stale disconnect can't end a newer connection.
+- Map servers send no session-begin confirmation (the 2010 client breaks if
+  they do), so a session becomes `in_world` with the first packet its map
+  server sends the player.
+- There is no `linkdead` grace period yet: a disconnect ends the session, as
+  the map server ends the character. Heartbeats come from the world server
+  (every 30 s for the players connected to it) rather than from map servers;
+  `GET /status` counts rows seen in the last 90 s.
+- `zone_id` follows zone changes that move a player between map servers; with
+  one map server it keeps the zone the player entered the world in, until
+  phase 3 routes zone changes through the world server.
 
 ## Relationship to Garlemald
 

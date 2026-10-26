@@ -157,14 +157,21 @@ impl PacketProcessor {
                     character_id: hello.session_id,
                     world_id: self.world_id,
                     zone_id,
-                    map_server: handle.as_ref().map(|h| format!("{}:{}", h.address, h.port)).unwrap_or_default(),
+                    map_server: handle
+                        .as_ref()
+                        .map(|h| format!("{}:{}", h.address, h.port))
+                        .unwrap_or_default(),
                     client_ip: client.peer.clone(),
                     conn_seq: client.conn_seq,
                 })
                 .await;
             match begun {
                 Ok(Some(other)) => {
-                    tracing::info!(session = hello.session_id, other, "another character of this account is online; ending it");
+                    tracing::info!(
+                        session = hello.session_id,
+                        other,
+                        "another character of this account is online; ending it"
+                    );
                     for ch in [SessionChannel::Zone, SessionChannel::Chat] {
                         if let Some(old) = self.sessions.get(ch, other).await {
                             self.end_existing_session(ch, old, client).await;
@@ -172,7 +179,9 @@ impl PacketProcessor {
                     }
                 }
                 Ok(None) => {}
-                Err(e) => tracing::warn!(session = hello.session_id, error = %e, "couldn't record the world session"),
+                Err(e) => {
+                    tracing::warn!(session = hello.session_id, error = %e, "couldn't record the world session")
+                }
             }
         }
         // Evict any prior session on this (channel, id) before installing the
@@ -402,6 +411,9 @@ impl PacketProcessor {
                             let begin = tx::build_session_begin(p.session_id, false);
                             handle.send_bytes(begin.to_bytes()).await;
                             let map = format!("{}:{}", handle.address, handle.port);
+                            session
+                                .in_world
+                                .store(false, std::sync::atomic::Ordering::Relaxed);
                             {
                                 let mut state = session.state.lock().await;
                                 state.routing1 = Some(handle);

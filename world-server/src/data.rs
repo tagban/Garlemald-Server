@@ -102,6 +102,10 @@ pub struct Session {
     pub channel: SessionChannel,
     pub client: ClientHandle,
     pub state: Mutex<SessionState>,
+    /// The map server has sent this player something since the session began
+    /// or last moved map servers: the character is in the world. (Map servers
+    /// send no session-begin confirmation; the 2010 client breaks if they do.)
+    pub in_world: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -120,6 +124,7 @@ impl Session {
             channel,
             client,
             state: Mutex::new(SessionState::default()),
+            in_world: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }

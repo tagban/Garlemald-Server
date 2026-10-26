@@ -49,6 +49,7 @@ mod gathering;
 mod group;
 mod inventory;
 mod leve;
+mod modules;
 // The Lua content runtime is the one surface the in-process test harnesses
 // (e.g. the `content-test` quest-walkthrough exe) link against.
 pub mod lua;
@@ -117,6 +118,21 @@ pub async fn run() -> Result<()> {
         load_from_database = config.load_from_database(),
         "config resolved"
     );
+
+    match common::modules::enabled() {
+        Ok(m) => modules::init(&m),
+        Err(e) => {
+            if smoke {
+                std::process::exit(common::smoke::smoke_fail(
+                    "Map",
+                    "config",
+                    &e.to_string(),
+                    common::smoke::EXIT_CONFIG,
+                ));
+            }
+            return Err(e);
+        }
+    }
 
     tracing::info!(db_path = %config.db_path().display(), "opening sqlite database");
     let db = match Database::open(config.db_path()).await {

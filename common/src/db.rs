@@ -99,6 +99,14 @@ pub async fn open_or_create(path: impl AsRef<Path>) -> Result<Connection> {
 
     apply_migrations(&conn).await?;
 
+    // the enabled modules' own tables (common::modules)
+    let modules = crate::modules::enabled()?;
+    if modules.iter().any(|m| !m.sql.is_empty()) {
+        conn.call(move |c| Ok::<_, rusqlite::Error>(crate::modules::apply_sql(c, &modules)))
+            .await
+            .context("applying module migrations")??;
+    }
+
     Ok(conn)
 }
 

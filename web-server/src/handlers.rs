@@ -39,6 +39,8 @@ use crate::templates::{login_page, signup_page};
 pub struct AppState {
     pub db: Arc<Database>,
     pub session_hours: u32,
+    /// The world's name, for the status module.
+    pub world_name: String,
 }
 
 const USERNAME_MIN: usize = 3;

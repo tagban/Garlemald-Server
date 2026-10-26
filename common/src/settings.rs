@@ -58,9 +58,13 @@ pub fn load<T: DeserializeOwned + Default>(name: &str, override_path: Option<&Pa
         });
     }
     match merged {
-        Some(v) => v
-            .try_into()
-            .with_context(|| format!("{name} settings ({} over {})", user.display(), default.display())),
+        Some(v) => v.try_into().with_context(|| {
+            format!(
+                "{name} settings ({} over {})",
+                user.display(),
+                default.display()
+            )
+        }),
         None => {
             tracing::warn!(name, folder = %root.display(), "no settings files; using built-in defaults");
             Ok(T::default())
@@ -103,14 +107,20 @@ mod tests {
     }
     impl Default for Server {
         fn default() -> Self {
-            Self { bind_ip: "127.0.0.1".into(), port: 1 }
+            Self {
+                bind_ip: "127.0.0.1".into(),
+                port: 1,
+            }
         }
     }
 
     #[test]
     fn override_changes_only_what_it_names() {
-        let base: toml::Value = toml::from_str("list = [1, 2]\n[server]\nbind_ip = \"127.0.0.1\"\nport = 54994\n").unwrap();
-        let over: toml::Value = toml::from_str("list = [3]\n[server]\nbind_ip = \"0.0.0.0\"\n").unwrap();
+        let base: toml::Value =
+            toml::from_str("list = [1, 2]\n[server]\nbind_ip = \"127.0.0.1\"\nport = 54994\n")
+                .unwrap();
+        let over: toml::Value =
+            toml::from_str("list = [3]\n[server]\nbind_ip = \"0.0.0.0\"\n").unwrap();
         let s: S = merge(base, over).try_into().unwrap();
         assert_eq!(s.server.bind_ip, "0.0.0.0");
         assert_eq!(s.server.port, 54994);
@@ -127,7 +137,10 @@ mod tests {
         // SAFETY: tests touching XIVLEGACY_SETTINGS run in this one test
         unsafe { std::env::set_var("XIVLEGACY_SETTINGS", &dir) };
         let s: S = load("t", Some(&over)).unwrap();
-        assert_eq!((s.server.bind_ip.as_str(), s.server.port), ("0.0.0.0", 54994));
+        assert_eq!(
+            (s.server.bind_ip.as_str(), s.server.port),
+            ("0.0.0.0", 54994)
+        );
         let only_defaults: S = load("t", None).unwrap();
         assert_eq!(only_defaults.server.bind_ip, "127.0.0.1");
         let none: S = load("absent", None).unwrap();

@@ -517,6 +517,12 @@ async fn run_zone_connection(
                 };
                 if let Some(session) = session {
                     session.client.send_bytes(sub.to_bytes()).await;
+                    if session.channel == SessionChannel::Zone
+                        && !session.in_world.swap(true, Ordering::Relaxed)
+                        && let Err(e) = processor.db.world_session_in_world(target).await
+                    {
+                        tracing::warn!(session = target, error = %e, "couldn't update the world session");
+                    }
                 } else {
                     tracing::debug!(target, "zone reply to unknown session");
                 }

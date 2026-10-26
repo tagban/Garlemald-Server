@@ -33,6 +33,7 @@ mod database;
 mod handlers;
 mod server;
 mod session;
+mod status;
 mod templates;
 
 use crate::config::{Config, LaunchArgs};
