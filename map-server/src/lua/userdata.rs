@@ -4226,8 +4226,53 @@ impl UserData for LuaWorldManager {
         // linkshell UI scripts. Stubs for now; real impl needs
         // round-tripping through the world-server (linkshell metadata
         // lives there, not on map-server).
-        for stub in [
+        // The linkshell NPC (crate::linkshells): create, change the crest,
+        // disband.
+        methods.add_method(
             "RequestWorldLinkshellCreate",
+            |_, this, (player, name, crest): (mlua::AnyUserData, String, u16)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellCreate {
+                        player_id: p.snapshot.actor_id,
+                        name,
+                        crest,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellCrestModify",
+            |_, this, (player, name, crest): (mlua::AnyUserData, String, u16)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellCrestModify {
+                        player_id: p.snapshot.actor_id,
+                        name,
+                        crest,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellDelete",
+            |_, this, (player, name): (mlua::AnyUserData, String)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellDelete {
+                        player_id: p.snapshot.actor_id,
+                        name,
+                    },
+                );
+                Ok(())
+            },
+        );
+        for stub in [
             "RequestWorldLinkshellInviteMember",
             "RequestWorldLinkshellCancelInvite",
             "RequestWorldLinkshellKick",

@@ -1167,6 +1167,47 @@ async fn dispatch_event_updated_drain(
         .await;
 }
 
+/// Apply what a resumed event coroutine queued (`callClientFunction`,
+/// `EndEvent`, messages, ...) the way `dispatch_event_updated_drain` does
+/// for a client's event update: event commands to the client, the rest
+/// through the runtime applier. Used when the server resumes a script
+/// itself, such as a linkshell result.
+pub(crate) async fn apply_resumed_event_commands(
+    player_actor_id: u32,
+    cmds: Vec<crate::lua::LuaCommandKind>,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    db: &Database,
+    lua: &Arc<LuaEngine>,
+) {
+    if cmds.is_empty() {
+        return;
+    }
+    let event_session_snapshot = if let Some(handle) = registry.get(player_actor_id).await {
+        let c = handle.character.read().await;
+        c.event_session.clone()
+    } else {
+        return;
+    };
+    let mut outbox = crate::event::outbox::EventOutbox::new();
+    crate::event::lua_bridge::translate_lua_commands_into_outbox(
+        &cmds,
+        &event_session_snapshot,
+        &mut outbox,
+    );
+    for e in outbox.drain() {
+        Box::pin(dispatch_event_event(&e, registry, world, db, Some(lua))).await;
+    }
+    Box::pin(crate::runtime::quest_apply::apply_runtime_lua_commands(
+        cmds,
+        registry,
+        db,
+        world,
+        Some(lua),
+    ))
+    .await;
+}
+
 #[allow(dead_code)]
 fn dispatch_event_updated(
     lua: Option<&Arc<LuaEngine>>,

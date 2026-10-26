@@ -7786,6 +7786,22 @@ impl PacketProcessor {
                 // group sent group_id=0x8000000000000001 (player actor id 1
                 // misinterpreted as a director). Hence the explicit branch
                 // gating below.
+                // A linkshell group: its crest, master and ranks
+                // (crate::linkshells).
+                if event_name == "/_init"
+                    && crate::linkshells::db_id_of(group_id).is_some()
+                    && let Some(h) = self.registry.by_session(source).await
+                {
+                    crate::linkshells::answer_group_created(
+                        &self.world,
+                        &self.db,
+                        h.actor_id,
+                        source,
+                        group_id,
+                    )
+                    .await;
+                    return Ok(());
+                }
                 let high = (group_id >> 32) as u32;
                 if event_name == "/_init" {
                     let director_actor_id: Option<u32> = if high == 0 {
@@ -9792,6 +9808,12 @@ impl PacketProcessor {
             released_content_kick = parked_kick.is_some(),
             "RX 0x0007 zone-in-complete — reload/login latches cleared",
         );
+        // The player's linkshells, now the client has the world loaded
+        // (crate::linkshells; group packets sent during the login burst
+        // were ignored).
+        if !had_deferred_warp && let Some(h) = self.registry.by_session(session_id).await {
+            crate::linkshells::send_login(&self.registry, &self.world, &self.db, h.actor_id).await;
+        }
         if let Some(kick) = parked_kick {
             if let Some(client) = self.world.client(session_id).await {
                 let mut sub = crate::packets::send::events::build_kick_event(

@@ -186,6 +186,18 @@ impl CoroutineScheduler {
             .is_some_and(|parked| !parked.is_empty())
     }
 
+    /// The coroutines parked on `signal` that belong to player `owner`;
+    /// the others stay parked (a per-player result such as `ls_result`).
+    pub fn drain_signal_for(&mut self, signal: &str, owner: u32) -> Vec<ParkedCoroutine> {
+        let all = self.drain_signal(signal);
+        let (mine, others): (Vec<_>, Vec<_>) =
+            all.into_iter().partition(|c| c.owner_player_id == owner);
+        for c in others {
+            self.park_signal(signal.to_string(), c);
+        }
+        mine
+    }
+
     pub fn drain_signal(&mut self, signal: &str) -> Vec<ParkedCoroutine> {
         self.sleeping_on_signal.remove(signal).unwrap_or_default()
     }

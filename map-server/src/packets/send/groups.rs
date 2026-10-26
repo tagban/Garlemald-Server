@@ -935,6 +935,88 @@ pub fn build_set_occupancy_group(
     SubPacket::new(OP_SET_OCCUPANCY_GROUP, actor_id, data)
 }
 
+// ---------------------------------------------------------------------------
+// Linkshells (Meteor `Linkshell` group, `Group.CompanyGroup`).
+// ---------------------------------------------------------------------------
+
+/// `Group.CompanyGroup`: the GroupHeader type of a linkshell.
+pub const GROUP_TYPE_LINKSHELL: u32 = 20002;
+
+/// 0x018A SetActiveLinkshellPacket: which linkshell is the player's active
+/// one (0: none). Meteor `SetActiveLinkshellPacket`.
+pub fn build_set_active_linkshell(source_actor_id: u32, group_id: u64) -> SubPacket {
+    let mut data = body(0x98);
+    let mut c = Cursor::new(&mut data[..]);
+    c.write_u64::<LittleEndian>(group_id).unwrap();
+    c.set_position(0x40);
+    c.write_u32::<LittleEndian>(GROUP_TYPE_LINKSHELL).unwrap();
+    c.set_position(0x60);
+    c.write_u32::<LittleEndian>(u32::from(group_id != 0))
+        .unwrap();
+    SubPacket::new(OP_SET_ACTIVE_LINKSHELL, source_actor_id, data)
+}
+
+/// 0x017A SynchGroupWorkValues for a linkshell: Meteor
+/// `Linkshell.SendInitWorkValues` / `ResendWorkValues` —
+/// `work._globalSave.master` (long), `work._globalSave.crestIcon[0]`
+/// (short), `work._globalSave.rank` (byte) and each member's
+/// `work._memberSave[i].rank` (byte), to `target` ("/_init" answering the
+/// client's group-created, "memberRank" for a later change). Entries that
+/// don't fit one packet continue in the next.
+pub fn build_synch_group_work_values_linkshell(
+    source_actor_id: u32,
+    group_id: u64,
+    master: u64,
+    crest: u16,
+    rank: u8,
+    member_ranks: &[u8],
+    target: &str,
+) -> Vec<SubPacket> {
+    use common::utils::murmur_hash2;
+    // body(0xB0) holds 0x90 bytes: the group id (8), the running total (1),
+    // then entries and the target
+    const ROOM: usize = 0x90 - 9;
+    let target_len = 1 + target.len();
+    let mut entries: Vec<Vec<u8>> = Vec::new();
+    let mut entry = |kind: u8, name: &str, value: &[u8]| {
+        let mut e = vec![kind];
+        e.extend_from_slice(&murmur_hash2(name, 0).to_le_bytes());
+        e.extend_from_slice(value);
+        entries.push(e);
+    };
+    entry(8, "work._globalSave.master", &master.to_le_bytes());
+    entry(2, "work._globalSave.crestIcon[0]", &crest.to_le_bytes());
+    entry(1, "work._globalSave.rank", &[rank]);
+    for (i, r) in member_ranks.iter().enumerate() {
+        entry(1, &format!("work._memberSave[{i}].rank"), &[*r]);
+    }
+    let mut packets = Vec::new();
+    let mut i = 0;
+    while i < entries.len() || packets.is_empty() {
+        let mut data = body(0xB0);
+        data[..8].copy_from_slice(&group_id.to_le_bytes());
+        let mut pos = 9;
+        while i < entries.len() && (pos - 9) + entries[i].len() + target_len <= ROOM {
+            data[pos..pos + entries[i].len()].copy_from_slice(&entries[i]);
+            pos += entries[i].len();
+            i += 1;
+        }
+        data[pos] = 0x82 + target.len() as u8;
+        data[pos + 1..pos + 1 + target.len()].copy_from_slice(target.as_bytes());
+        pos += target_len;
+        data[8] = (pos - 9) as u8;
+        packets.push(SubPacket::new(
+            OP_SYNCH_GROUP_WORK_VALUES,
+            source_actor_id,
+            data,
+        ));
+        if i < entries.len() && pos == 9 + target_len {
+            break; // an entry larger than a packet: can't happen with these sizes
+        }
+    }
+    packets
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

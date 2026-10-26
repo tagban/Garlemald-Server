@@ -652,6 +652,25 @@ pub enum LuaCommand {
     /// `TeleportCommand.lua` destination gate and the aetheryte menu's
     /// per-child gates survive a relog. `aetheryte_id` is the
     /// aetheryte's actor class id (128xxxx — same namespace as
+    /// `WorldManager:RequestWorldLinkshellCreate(player, name, crest)`:
+    /// the Adventurers' Guild linkshell NPC. The script waits on
+    /// `ls_result` for the outcome (crate::linkshells::create).
+    LinkshellCreate {
+        player_id: u32,
+        name: String,
+        crest: u16,
+    },
+    /// `WorldManager:RequestWorldLinkshellCrestModify(player, name, crest)`.
+    LinkshellCrestModify {
+        player_id: u32,
+        name: String,
+        crest: u16,
+    },
+    /// `WorldManager:RequestWorldLinkshellDelete(player, name)`.
+    LinkshellDelete {
+        player_id: u32,
+        name: String,
+    },
     /// `characters.homepoint`).
     UnlockAetheryte {
         player_id: u32,
