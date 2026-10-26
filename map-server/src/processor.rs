@@ -10050,7 +10050,7 @@ impl PacketProcessor {
             tracing::info!(
                 session = session_id,
                 cmd = %line,
-                "gm command from chat",
+                "command from chat",
             );
             // The sender is the implicit target for commands whose
             // trailing `<name>` arg is omitted — Meteor's command
@@ -10060,8 +10060,11 @@ impl PacketProcessor {
                 let c = handle.character.read().await;
                 c.base.display_name().to_string()
             };
+            // what the player may run: their account's GM level against
+            // settings/commands.toml (crate::command_permissions)
+            let level = self.db.gm_level_of_character(session_id).await.unwrap_or(0);
             let feedback = if let Some(cmd) = &self.cmd {
-                match cmd.run_as(&line, Some(&invoker)).await {
+                match cmd.run_as_player(&line, &invoker, level).await {
                     Ok(response) if !response.is_empty() => {
                         tracing::info!(%response, "command result");
                         Some((ChatKind::System, response))

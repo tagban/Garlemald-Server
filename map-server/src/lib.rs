@@ -37,6 +37,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 mod achievement;
 mod actor;
 mod battle;
+mod command_permissions;
 mod command_processor;
 mod config;
 mod crafting;
@@ -119,8 +120,11 @@ pub async fn run() -> Result<()> {
         "config resolved"
     );
 
-    match common::modules::enabled() {
-        Ok(m) => modules::init(&m),
+    match common::modules::enabled().and_then(|m| {
+        modules::init(&m);
+        command_permissions::init()
+    }) {
+        Ok(()) => {}
         Err(e) => {
             if smoke {
                 std::process::exit(common::smoke::smoke_fail(

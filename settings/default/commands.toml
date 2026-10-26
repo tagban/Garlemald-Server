@@ -1,0 +1,55 @@
+# XIVLegacy Server: who may use each chat command (typed in game as !command),
+# shipped defaults. Don't edit this file: put what you change in
+# settings/commands.toml (only what differs; see settings/README.md).
+#
+# GM levels, set per account with !setgm <level> <character name> (or from
+# the map server's console):
+#   0 player   1 helper   2 GM   3 senior GM   4 administrator
+#
+# A command not listed here needs administrator. Commands that aren't retail
+# behavior (free teleports, for example) default to GM; lower one to 0 to give
+# it to every player on your server.
+
+# The level needed to aim a command at someone else; below it, a command only
+# works on whoever typed it.
+target_others = 2
+
+[levels]
+# everyone
+help = 0
+who = 0
+version = 0
+
+# GMs: moving players around, looking after them
+zone = 2
+camp = 2
+warp = 2
+home = 2
+revive = 2
+speed = 2
+dismount = 2
+wake = 2
+
+# senior GMs: changing what characters have
+givegil = 3
+giveexp = 3
+sethome = 3
+joingc = 3
+setgcrank = 3
+addgcseals = 3
+accruerest = 3
+issuechocobo = 3
+rentchocobo = 3
+hireretainer = 3
+dismissretainer = 3
+listretainers = 3
+setsleeping = 3
+dream = 3
+die = 3
+
+# administrators: GM levels, scripts and quest debugging
+setgm = 4
+reload = 4
+talkto = 4
+pushtrigger = 4
+setseq = 4
