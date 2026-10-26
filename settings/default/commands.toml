@@ -42,6 +42,7 @@ getid = 2
 hasitem = 2
 haskeyitem = 2
 togglegm = 2
+gmgear = 2
 jail = 2
 pardon = 2
 setmusic = 2

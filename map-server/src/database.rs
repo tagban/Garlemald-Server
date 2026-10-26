@@ -3583,6 +3583,48 @@ impl Database {
             .await
     }
 
+    pub async fn add_linkshell_member(&self, id: u64, character_id: u32, rank: u8) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    "INSERT OR REPLACE INTO characters_linkshells (characterId, linkshellId, rank) VALUES (:p, :l, :r)",
+                    named_params! { ":p": character_id, ":l": id as i64, ":r": rank },
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn remove_linkshell_member(&self, id: u64, character_id: u32) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    "DELETE FROM characters_linkshells WHERE characterId = :p AND linkshellId = :l",
+                    named_params! { ":p": character_id, ":l": id as i64 },
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn set_linkshell_member_rank(
+        &self,
+        id: u64,
+        character_id: u32,
+        rank: u8,
+    ) -> Result<bool> {
+        let n = self
+            .conn
+            .call_db(move |c| {
+                c.execute(
+                    "UPDATE characters_linkshells SET rank = :r WHERE characterId = :p AND linkshellId = :l",
+                    named_params! { ":p": character_id, ":l": id as i64, ":r": rank },
+                )
+            })
+            .await?;
+        Ok(n > 0)
+    }
+
     pub async fn set_linkshell_crest(&self, id: u64, crest: u16) -> Result<()> {
         self.conn
             .call_db(move |c| {

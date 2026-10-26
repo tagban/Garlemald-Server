@@ -10226,15 +10226,31 @@ impl PacketProcessor {
                 // world-manager side owns that. For now just log.
                 tracing::debug!(session = session_id, "chat tell (lookup pending)");
             }
-            ChatKind::Party | ChatKind::Linkshell => {
-                // Group chat — the fan-out target is determined by the
-                // player's cached party/linkshell roster on
-                // PlayerHelperState (Phase 6 scaffolding).
-                tracing::debug!(
-                    session = session_id,
-                    kind = ?kind,
-                    "group chat (party-roster wiring pending)",
-                );
+            // Linkshell chat goes to every member of the sender's active
+            // linkshell (crate::linkshells).
+            ChatKind::Linkshell => {
+                let active = self
+                    .db
+                    .active_linkshell(handle.actor_id)
+                    .await
+                    .unwrap_or_default();
+                match self.db.linkshell_by_name(&active).await {
+                    Ok(Some(ls)) if !active.is_empty() => ob.push(SocialEvent::ChatLinkshell {
+                        source_actor_id: handle.actor_id,
+                        linkshell_id: ls.0,
+                        sender_name: sender_name.clone(),
+                        message: pkt.message.clone(),
+                    }),
+                    _ => tracing::debug!(
+                        session = session_id,
+                        "linkshell chat with no active linkshell"
+                    ),
+                }
+            }
+            ChatKind::Party => {
+                // Party chat — the fan-out target is determined by the
+                // player's cached party roster (Phase 6 scaffolding).
+                tracing::debug!(session = session_id, kind = ?kind, "group chat (party-roster wiring pending)");
             }
             _ => {}
         }

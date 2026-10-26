@@ -77,6 +77,7 @@ camp = 0
 | `!zone <zone id or name> [name]` | To a zone's spawn point, or beside its aetheryte (`!zone central shroud`, `!zone 155`, `!zone mordion`) |
 | `!camp [camp name] [name]` | To an aetheryte camp or gate by part of its name (`!camp bearded rock`); alone, lists the camps |
 | `!setgm <level> <name>` | Set the GM level of a character's account |
+| `!gmgear [name]` | The Judge's set, 1.0's GM outfit (all races) |
 | `!togglegm [name]` | The GM icon over your head on or off (shows from GM level 2; on by default) |
 | `!jail <First Last> [cell] [reason]` / `!pardon <name>` | Hold someone in a Mordion Gaol cell (see below) / release them to their home city |
 | `!goto <name>` / `!bring <name>` / `!bringall` | To someone / someone to you / everyone online to you |

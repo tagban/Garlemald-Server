@@ -509,6 +509,34 @@ impl CommandProcessor {
         format!("gave {name} {qty} × item {item}")
     }
 
+    /// `gmgear [name]`: the Judge's set, 1.0's GM outfit (wearable by every
+    /// race, no level): coif, haubergeon, skirt, vambraces, sollerets.
+    pub(super) async fn handle_gmgear(&self, args: &Args<'_>) -> String {
+        const JUDGES: [u32; 5] = [8011708, 8031716, 8050808, 8070243, 8081208];
+        let Some(name) = args.rest_joined(0) else {
+            return if args.was_refused() {
+                String::new()
+            } else {
+                "usage: gmgear <name>".into()
+            };
+        };
+        let id = match self.online_id(&name).await {
+            Ok(id) => id,
+            Err(e) => return e,
+        };
+        let cmds = JUDGES
+            .iter()
+            .map(|&item| LC::AddItem {
+                actor_id: id,
+                item_package: PKG_NORMAL,
+                item_id: item,
+                quantity: 1,
+            })
+            .collect();
+        self.run_lua(cmds).await;
+        format!("gave {name} the Judge's set (coif, haubergeon, skirt, vambraces, sollerets)")
+    }
+
     /// `delitem` / `delkeyitem <id> [qty] [name]`.
     pub(super) async fn handle_delitem(&self, args: &Args<'_>, key_item: bool) -> String {
         let usage = if key_item {

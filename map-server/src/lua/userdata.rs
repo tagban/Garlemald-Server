@@ -4205,7 +4205,6 @@ impl UserData for LuaWorldManager {
             "CancelTrade",
             "CompleteTrade",
             "RefuseTrade",
-            "GroupInviteResult",
             "ReloadZone",
             "AddToBazaar",
             "RemoveFromBazaar",
@@ -4272,25 +4271,108 @@ impl UserData for LuaWorldManager {
                 Ok(())
             },
         );
-        for stub in [
+        methods.add_method(
             "RequestWorldLinkshellInviteMember",
-            "RequestWorldLinkshellCancelInvite",
-            "RequestWorldLinkshellKick",
-            "RequestWorldLinkshellLeave",
-            "RequestWorldLinkshellChangeActive",
-            "RequestWorldLinkshellRankChange",
-        ] {
-            let name: &'static str = stub;
-            methods.add_method(name, move |_, this, _: mlua::MultiValue| {
+            |_, this, (player, name, invitee): (mlua::AnyUserData, String, u32)| {
+                let p = player.borrow::<LuaPlayer>()?;
                 push(
                     &this.queue,
-                    LuaCommand::LogError(format!(
-                        "WorldManager:{name} (stub — needs world-server round-trip)"
-                    )),
+                    LuaCommand::LinkshellInvite {
+                        player_id: p.snapshot.actor_id,
+                        name,
+                        invitee,
+                    },
                 );
                 Ok(())
-            });
-        }
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellCancelInvite",
+            |_, this, player: mlua::AnyUserData| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellInviteCancel {
+                        player_id: p.snapshot.actor_id,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellLeave",
+            |_, this, (player, name): (mlua::AnyUserData, String)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellLeave {
+                        player_id: p.snapshot.actor_id,
+                        name,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellKick",
+            |_, this, (player, name, kicked): (mlua::AnyUserData, String, String)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellKick {
+                        player_id: p.snapshot.actor_id,
+                        name,
+                        kicked,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellChangeActive",
+            |_, this, (player, name): (mlua::AnyUserData, Option<String>)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellChangeActive {
+                        player_id: p.snapshot.actor_id,
+                        name: name.unwrap_or_default(),
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellRankChange",
+            |_, this, (player, name, member, rank): (mlua::AnyUserData, String, String, u8)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellRankChange {
+                        player_id: p.snapshot.actor_id,
+                        name,
+                        member,
+                        rank,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "GroupInviteResult",
+            |_, this, (player, group_type, result): (mlua::AnyUserData, u32, u32)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::GroupInviteResult {
+                        player_id: p.snapshot.actor_id,
+                        group_type,
+                        result,
+                    },
+                );
+                Ok(())
+            },
+        );
 
         // Warp methods. `WarpToPosition` is fully wired (same-zone
         // teleport — emits a SetActorPosition packet so the client
