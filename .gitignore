@@ -12,3 +12,6 @@
 /data-backups/
 .claude/
 /config/
+
+# operator settings overrides (settings/README.md); the shipped defaults are tracked
+/settings/*.toml

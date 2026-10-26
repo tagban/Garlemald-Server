@@ -1,0 +1,23 @@
+# XIVLegacy Server: the worlds shown at character select, shipped defaults (one
+# world on this machine). Read by the lobby (world list and hand-off address)
+# and the world server (its name, by `[server].world_id`).
+#
+# Don't edit this file: a `[[servers]]` list in settings/servers.toml replaces
+# this one (see settings/README.md). A host's list usually looks like:
+#
+#   [[servers]]
+#   id          = 1
+#   name        = "Fernehalwes"
+#   address     = "xiv.example.com"   # what players on the internet connect to
+#   lan_address = "auto"              # players on the host's own network get the
+#                                     # address they reached the lobby on
+#   port        = 54992
+
+[[servers]]
+id            = 1
+name          = "Fernehalwes"
+address       = "127.0.0.1"
+port          = 54992
+list_position = 1
+max_chars     = 5000
+is_active     = true

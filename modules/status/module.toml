@@ -1,0 +1,3 @@
+name = "status"
+version = "1.0"
+description = "GET /status on the web server: players online and the most recently active characters with their starting city, for server status pages"

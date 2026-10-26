@@ -1,4 +1,5 @@
-# Garlemald map-server configuration (localhost defaults).
+# XIVLegacy Server: map (the game world), shipped defaults.
+# Don't edit this file: put what differs in settings/map.toml (see settings/README.md).
 
 [server]
 bind_ip = "127.0.0.1"

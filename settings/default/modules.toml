@@ -1,0 +1,6 @@
+# XIVLegacy Server: optional modules (modules/README.md), shipped defaults.
+# Don't edit this file: put your list in settings/modules.toml, for example
+#   enabled = ["status", "welcome"]
+# (the list replaces this one).
+
+enabled = ["status"]

@@ -1,5 +1,5 @@
 @echo off
-rem Run the lobby server. Uses .\configs\lobby.toml by default -- the same
+rem Run the lobby server. Uses settings\lobby.toml over settings\default\lobby.toml -- the same
 rem default the binary itself uses. Extra args are passed through to the
 rem `lobby-server` CLI (e.g. --ip 0.0.0.0 --port 54994 --config path).
 setlocal EnableExtensions EnableDelayedExpansion

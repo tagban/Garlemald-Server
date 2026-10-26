@@ -1,5 +1,5 @@
 @echo off
-rem Run the web (login/signup) server. Uses .\configs\web.toml by default --
+rem Run the web (login/signup) server. Uses settings\web.toml over settings\default\web.toml --
 rem the same default the binary itself uses. Extra args are passed through
 rem to the `web-server` CLI (e.g. --ip 0.0.0.0 --port 54993 --config path).
 setlocal EnableExtensions EnableDelayedExpansion

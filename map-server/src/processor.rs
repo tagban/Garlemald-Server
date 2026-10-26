@@ -615,6 +615,10 @@ impl PacketProcessor {
         // silently draining QuestIncCounter + AddGil(2000) + EndEvent).
         // Same `purge_owner` sweep the ContentFinished teardown uses
         // (runtime/quest_apply.rs). (Garlemald-Server #46.)
+        if let Some(handle) = self.registry.by_session(session_id).await {
+            self.run_module_hooks(&handle, session_id, "on_logout")
+                .await;
+        }
         if let Some(handle) = self.registry.by_session(session_id).await
             && let Some(lua) = self.lua.as_ref()
         {
@@ -857,6 +861,7 @@ impl PacketProcessor {
                     ),
                 }
             }
+            self.run_module_hooks(&handle, session_id, "on_login").await;
 
             // C# `WorldManager.DoZoneIn` ends with
             // `LuaEngine.CallLuaFunction(player, playerArea, "onZoneIn", true)`
@@ -1020,6 +1025,8 @@ impl PacketProcessor {
         let Some(engine) = self.lua.as_ref() else {
             return;
         };
+        self.run_module_hooks(handle, session_id, "on_zone_in")
+            .await;
         let zone_name = match self.world.zone(zone_id).await {
             Some(z) => z.read().await.core.zone_name.clone(),
             None => String::new(),
@@ -1061,6 +1068,41 @@ impl PacketProcessor {
                 commands = cmd_count,
                 "onZoneIn lua hook errored; applied partial commands"
             ),
+        }
+    }
+
+    /// The enabled modules' `hook` (crate::modules): on_login and on_zone_in
+    /// apply what the script queued as the game's own hooks there do;
+    /// on_logout's commands are dropped (the player is leaving).
+    async fn run_module_hooks(&self, handle: &ActorHandle, session_id: u32, hook: &str) {
+        let Some(engine) = self.lua.as_ref() else {
+            return;
+        };
+        for (module, script) in crate::modules::with_hook(hook) {
+            let snapshot = {
+                let c = handle.character.read().await;
+                build_player_snapshot_for_login(&c)
+            };
+            let result = engine.call_player_hook_best_effort(&script, hook, snapshot);
+            let n = result.commands.len();
+            for cmd in result.commands {
+                match hook {
+                    "on_login" => self.apply_login_lua_command(handle, cmd).await,
+                    "on_zone_in" => {
+                        self.apply_post_zone_in_lua_command(handle, session_id, cmd)
+                            .await
+                    }
+                    _ => {}
+                }
+            }
+            match result.error {
+                None => {
+                    tracing::debug!(module = %module, hook, session = session_id, commands = n, "module hook ran")
+                }
+                Some(e) => {
+                    tracing::warn!(module = %module, hook, session = session_id, error = %e, "module hook failed")
+                }
+            }
         }
     }
 

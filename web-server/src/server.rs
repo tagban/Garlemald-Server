@@ -45,6 +45,10 @@ pub async fn run(config: Config, db: Database, smoke: bool) -> Result<()> {
     let state = AppState {
         db: Arc::new(db),
         session_hours: config.session_hours(),
+        world_name: common::server_list::ServerList::load(None)
+            .ok()
+            .and_then(|l| l.active().next().map(|w| w.name.clone()))
+            .unwrap_or_default(),
     };
 
     let app = Router::new()
@@ -57,9 +61,15 @@ pub async fn run(config: Config, db: Database, smoke: bool) -> Result<()> {
             "/signup",
             get(handlers::signup_form).post(handlers::signup_submit),
         )
-        .route("/healthz", get(handlers::healthz))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .route("/healthz", get(handlers::healthz));
+    // modules/status
+    let app = if common::modules::is_enabled("status") {
+        tracing::info!("status module: GET /status");
+        app.route("/status", get(crate::status::status))
+    } else {
+        app
+    };
+    let app = app.layer(TraceLayer::new_for_http()).with_state(state);
 
     tracing::info!(%bind_addr, "web server listening");
     let listener = match tokio::net::TcpListener::bind(bind_addr).await {

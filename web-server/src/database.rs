@@ -129,3 +129,42 @@ impl Database {
             .context("insert session")
     }
 }
+
+/// A world_sessions row this old (seconds) without a refresh is a player a
+/// crashed world server left behind (it refreshes every 30 s).
+const SEEN_WITHIN_S: i64 = 90;
+
+impl Database {
+    /// The status module: players in the world, and the `limit` most recently
+    /// active characters as (name, initialTown, lastActiveAt, online), the
+    /// ones online first.
+    pub async fn status(&self, limit: usize) -> Result<(u32, Vec<(String, i64, i64, bool)>)> {
+        self.conn
+            .call_db(move |c| {
+                let since = chrono::Utc::now().timestamp() - SEEN_WITHIN_S;
+                let online: u32 = c.query_row(
+                    "SELECT COUNT(*) FROM world_sessions WHERE last_seen_at >= :since",
+                    named_params! { ":since": since },
+                    |r| r.get(0),
+                )?;
+                let mut st = c.prepare(
+                    r"SELECT c.name, COALESCE(c.initialTown, 0), c.lastActiveAt,
+                             ws.character_id IS NOT NULL AND ws.last_seen_at >= :since AS online
+                      FROM characters c
+                      LEFT JOIN world_sessions ws ON ws.character_id = c.id
+                      WHERE c.state = 2 AND c.lastActiveAt IS NOT NULL
+                      ORDER BY online DESC, c.lastActiveAt DESC
+                      LIMIT :limit",
+                )?;
+                let rows = st
+                    .query_map(
+                        named_params! { ":since": since, ":limit": limit as i64 },
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok((online, rows))
+            })
+            .await
+            .context("status query")
+    }
+}
