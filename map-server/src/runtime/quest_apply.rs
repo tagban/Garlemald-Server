@@ -4566,28 +4566,24 @@ async fn resend_initial_equipment(
     );
 }
 
-/// Garlemald-Server #28 — load the player's equipped `(equip_slot,
-/// catalog_id)` pairs ready for `build_set_initial_equipment`. Shared by
-/// the FIX-A mid-session re-send (above) and the FIX-B zone-in bundle
-/// (`world_manager::send_zone_in_bundle`). The catalog id is the item
-/// graphic the client renders; `load_equipped_catalog_ids` resolves it
-/// by joining `characters_inventory_equipment` → `server_items`.
+/// The player's equipped gear as `(equip_slot, link)` pairs for
+/// `build_set_initial_equipment` (0x014E, the same body as
+/// LinkedItemListX08). `link` is the bag position the gear slot points
+/// at: bag slot in the low 16 bits, item package in the high 16 (Meteor
+/// `SetInitialEquipmentPacket.SetItem(slot, itemSlot)`). Sending catalog
+/// ids here linked every gear slot to a bag position that doesn't exist.
+/// Shared by the mid-session re-send (above) and the zone-in bundle.
 pub async fn load_initial_equipment_pairs(
     db: &Database,
     player_id: u32,
     class_id: u8,
 ) -> Vec<(u16, u32)> {
-    let mut pairs: Vec<(u16, u32)> = db
-        .load_equipped_catalog_ids(player_id, class_id)
+    db.equipment_links(player_id, class_id)
         .await
         .unwrap_or_default()
         .into_iter()
-        .collect();
-    // Deterministic order — the HashMap iteration order is otherwise
-    // nondeterministic, which would make the packet bytes (and tests)
-    // flaky.
-    pairs.sort_by_key(|(slot, _)| *slot);
-    pairs
+        .map(|(equip_slot, slot, package)| (equip_slot, slot as u32 | (package as u32) << 16))
+        .collect()
 }
 
 /// Tier 3 #13 — advance any fieldcraft leves the player currently
@@ -7950,9 +7946,9 @@ mod tests {
     }
 
     /// Garlemald-Server #28 — `load_initial_equipment_pairs` builds the
-    /// `&[(equip_slot, catalog_id)]` slice both the FIX-A mid-session
+    /// `&[(equip_slot, bag link)]` slice both the FIX-A mid-session
     /// re-send and the FIX-B zone-in bundle feed into
-    /// `build_set_initial_equipment`. Verifies (a) the slot→catalog
+    /// `build_set_initial_equipment`. Verifies (a) the slot→bag-link
     /// mapping is correct, (b) the result is sorted by equip slot
     /// (deterministic packet bytes), and (c) a character with no
     /// equipment yields an empty slice (the legacy zone-in behaviour).
@@ -7965,7 +7961,7 @@ mod tests {
         assert!(empty.is_empty(), "no equipment → empty slice");
 
         // Seed two bag items, equip them into out-of-order gear slots, and
-        // confirm the pairs come back sorted with the right catalog ids.
+        // confirm the pairs come back sorted with the right bag links.
         // `add_harvest_item` lands NORMAL slots 0 (4030010) and 1 (8050245).
         db.add_harvest_item(42, 4030010, 1, 1).await.unwrap();
         db.add_harvest_item(42, 8050245, 1, 1).await.unwrap();
@@ -7995,10 +7991,11 @@ mod tests {
         let pairs = load_initial_equipment_pairs(&db, 42, 3).await;
         assert_eq!(pairs.len(), 2, "two equipped slots");
         // Sorted by equip slot: main-hand (0) first, legs (10) second.
+        // Each gear slot links to its bag position (slot | package << 16).
         assert_eq!(pairs[0].0, crate::actor::player::SLOT_MAINHAND);
-        assert_eq!(pairs[0].1, 4030010, "main-hand catalog id");
+        assert_eq!(pairs[0].1, 0, "main-hand links bag slot 0");
         assert_eq!(pairs[1].0, 10);
-        assert_eq!(pairs[1].1, 8050245, "legs catalog id");
+        assert_eq!(pairs[1].1, 1, "legs link bag slot 1");
     }
 }
 

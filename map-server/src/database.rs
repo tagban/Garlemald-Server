@@ -2879,6 +2879,15 @@ impl Database {
         let effective_class: u8 = if is_undergarment { 0 } else { class_id };
         self.conn
             .call_db(move |c| {
+                // Older builds stored some gear (legs) under class 0 by a
+                // wrong slot number; drop that row so it can't shadow this one.
+                if !is_undergarment {
+                    c.execute(
+                        r"DELETE FROM characters_inventory_equipment
+                          WHERE characterId = :cid AND classId = 0 AND equipSlot = :slot",
+                        named_params! { ":cid": chara_id, ":slot": equip_slot },
+                    )?;
+                }
                 c.execute(
                     r"INSERT INTO characters_inventory_equipment (characterId, classId, equipSlot, itemId)
                       VALUES (:cid, :class, :slot, :iid)
@@ -2900,8 +2909,9 @@ impl Database {
         self.conn
             .call_db(move |c| {
                 c.execute(
+                    // class 0 too: see `equip_item`
                     r"DELETE FROM characters_inventory_equipment
-                      WHERE characterId = :cid AND classId = :class AND equipSlot = :slot",
+                      WHERE characterId = :cid AND (classId = :class OR classId = 0) AND equipSlot = :slot",
                     named_params! {
                         ":cid": chara_id,
                         ":class": class_id,
@@ -2912,6 +2922,136 @@ impl Database {
             })
             .await?;
         Ok(())
+    }
+
+    /// The item in gear slot `equip_slot` for `class_id` (undergarments are
+    /// stored under class 0): `(serverItemId, catalogId, quality)`.
+    pub async fn equipped_item(
+        &self,
+        chara_id: u32,
+        class_id: u8,
+        equip_slot: u16,
+    ) -> Result<Option<(u64, u32, u8)>> {
+        self.conn
+            .call_db(move |c| {
+                let row = c
+                    .query_row(
+                        r"SELECT si.id, si.itemId, si.quality
+                          FROM characters_inventory_equipment cie
+                          JOIN server_items si ON si.id = cie.itemId
+                          WHERE cie.characterId = :cid AND cie.equipSlot = :slot
+                            AND (cie.classId = :class OR cie.classId = 0)",
+                        named_params! { ":cid": chara_id, ":slot": equip_slot, ":class": class_id },
+                        |r| {
+                            Ok((
+                                r.get::<_, i64>(0)? as u64,
+                                r.get::<_, u32>(1)?,
+                                r.get::<_, i64>(2).unwrap_or(0) as u8,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                Ok(row)
+            })
+            .await
+    }
+
+    /// Equipped gear as `(equipSlot, bag slot, bag package)`: what the
+    /// client's equipment package links to (Meteor `ReferencedItemPackage`).
+    pub async fn equipment_links(
+        &self,
+        chara_id: u32,
+        class_id: u8,
+    ) -> Result<Vec<(u16, u16, u16)>> {
+        self.conn
+            .call_db(move |c| {
+                let mut stmt = c.prepare(
+                    r"SELECT cie.equipSlot, ci.slot, ci.itemPackage
+                      FROM characters_inventory_equipment cie
+                      JOIN characters_inventory ci
+                        ON ci.characterId = cie.characterId AND ci.serverItemId = cie.itemId
+                      WHERE cie.characterId = :cid AND (cie.classId = :class OR cie.classId = 0)
+                      ORDER BY cie.equipSlot",
+                )?;
+                let rows = stmt
+                    .query_map(
+                        named_params! { ":cid": chara_id, ":class": class_id },
+                        |r| {
+                            Ok((
+                                r.get::<_, u16>(0)?,
+                                r.get::<_, u16>(1)?,
+                                r.get::<_, u16>(2)?,
+                            ))
+                        },
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// `gamedata_items_graphics` for a catalog id: `(weaponId, equipmentId,
+    /// variantId, colorId)`.
+    pub async fn item_graphics(&self, catalog_id: u32) -> Result<Option<(u32, u32, u32, u32)>> {
+        self.conn
+            .call_db(move |c| {
+                let row = c
+                    .query_row(
+                        r"SELECT weaponId, equipmentId, variantId, colorId
+                          FROM gamedata_items_graphics WHERE catalogID = :id",
+                        named_params! { ":id": catalog_id },
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    )
+                    .optional()?;
+                Ok(row)
+            })
+            .await
+    }
+
+    /// Save one gear graphic to `characters_appearance` (Meteor
+    /// `SavePlayerAppearance`). `column` comes from a fixed list, never input.
+    pub async fn save_appearance_slot(
+        &self,
+        chara_id: u32,
+        column: &'static str,
+        value: u32,
+    ) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    &format!(
+                        "UPDATE characters_appearance SET {column} = :v WHERE characterId = :cid"
+                    ),
+                    named_params! { ":v": value, ":cid": chara_id },
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Give class `to` the gear class `from` is wearing (all but the
+    /// weapons), when `to` has none of its own yet. A first switch to a
+    /// class then keeps the outfit instead of stripping it.
+    pub async fn copy_class_equipment(&self, chara_id: u32, from: u8, to: u8) -> Result<usize> {
+        self.conn
+            .call_db(move |c| {
+                let has: i64 = c.query_row(
+                    "SELECT COUNT(*) FROM characters_inventory_equipment WHERE characterId = :cid AND classId = :to",
+                    named_params! { ":cid": chara_id, ":to": to },
+                    |r| r.get(0),
+                )?;
+                if has > 0 || from == to {
+                    return Ok(0);
+                }
+                let n = c.execute(
+                    r"INSERT INTO characters_inventory_equipment (characterId, classId, equipSlot, itemId)
+                      SELECT characterId, :to, equipSlot, itemId FROM characters_inventory_equipment
+                      WHERE characterId = :cid AND classId = :from AND equipSlot > 1",
+                    named_params! { ":cid": chara_id, ":from": from, ":to": to },
+                )?;
+                Ok(n)
+            })
+            .await
     }
 
     pub async fn equip_ability(
@@ -3792,6 +3932,16 @@ impl Database {
             })
             .await?;
         Ok(id)
+    }
+
+    /// (actor id, name) of the client's command static actors.
+    pub async fn command_static_actors(&self) -> Result<Vec<(u32, String)>> {
+        self.conn
+            .call_db(|c| {
+                let mut st = c.prepare("SELECT actorId, name FROM gamedata_static_actors WHERE classPath LIKE '/Command/%'")?;
+                st.query_map([], |r| Ok((r.get::<_, i64>(0)? as u32, r.get(1)?)))?.collect()
+            })
+            .await
     }
 
     /// The GM level of the account `character_id` belongs to (seed 103;

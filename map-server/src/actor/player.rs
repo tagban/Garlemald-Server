@@ -38,22 +38,25 @@ pub const CLASSID_LNC: u8 = 8;
 pub const CLASSID_THM: u8 = 22;
 pub const CLASSID_CNJ: u8 = 23;
 
-// Equipment slot constants used by `HasItemEquippedInSlot`.
+// Equipment slot constants (Meteor `Player.SLOT_*`; the client's gear slots).
 pub const SLOT_MAINHAND: u16 = 0;
 pub const SLOT_OFFHAND: u16 = 1;
-pub const SLOT_HEAD: u16 = 4;
-pub const SLOT_BODY: u16 = 5;
-pub const SLOT_HANDS: u16 = 6;
-pub const SLOT_WAIST: u16 = 7;
-pub const SLOT_LEGS: u16 = 8;
-pub const SLOT_FEET: u16 = 9;
-pub const SLOT_UNDERSHIRT: u16 = 11;
-pub const SLOT_UNDERGARMENT: u16 = 12;
-pub const SLOT_NECK: u16 = 13;
-pub const SLOT_EAR_RIGHT: u16 = 14;
-pub const SLOT_EAR_LEFT: u16 = 15;
-pub const SLOT_FINGER_RIGHT: u16 = 16;
-pub const SLOT_FINGER_LEFT: u16 = 17;
+pub const SLOT_THROWINGWEAPON: u16 = 4;
+pub const SLOT_PACK: u16 = 5;
+pub const SLOT_POUCH: u16 = 6;
+pub const SLOT_HEAD: u16 = 8;
+pub const SLOT_UNDERSHIRT: u16 = 9;
+pub const SLOT_BODY: u16 = 10;
+pub const SLOT_UNDERGARMENT: u16 = 11;
+pub const SLOT_LEGS: u16 = 12;
+pub const SLOT_HANDS: u16 = 13;
+pub const SLOT_FEET: u16 = 14;
+pub const SLOT_WAIST: u16 = 15;
+pub const SLOT_NECK: u16 = 16;
+pub const SLOT_EARS: u16 = 17;
+pub const SLOT_WRISTS: u16 = 19;
+pub const SLOT_FINGER_RIGHT: u16 = 21;
+pub const SLOT_FINGER_LEFT: u16 = 22;
 
 /// Extra per-player state needed by the helpers that doesn't live on the
 /// packet-shape `PlayerState`.

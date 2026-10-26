@@ -57,6 +57,8 @@ use crate::social::{
 };
 use crate::world_manager::WorldManager;
 
+mod equip;
+
 /// Read a null-terminated ASCII string out of a fixed-size byte slice.
 /// Used by the retail-IN dispatch arms (`OP_RX_DATA_REQUEST`,
 /// `OP_RX_GROUP_CREATED`) to surface the property-path / event-name
@@ -8652,7 +8654,9 @@ impl PacketProcessor {
             Self::TELEPORT_COMMAND => Some("TeleportCommand"),
             Self::EMOTE_STANDARD_COMMAND => Some("EmoteStandardCommand"),
             id if Self::is_gather_command(id) => Some("DummyCommand"),
-            _ => None,
+            // every other command with a script (EquipCommand, the
+            // linkshell commands, ...), from gamedata_static_actors
+            id => crate::command_actors::script_name(id),
         }
     }
 
@@ -8676,6 +8680,12 @@ impl PacketProcessor {
         // command that isn't node-scoped. (Wave 3 gather partial.)
         command_actor_identity: Option<(u32, String)>,
     ) {
+        // Equipping runs natively; the script needs bindings we don't have.
+        if command_name == "EquipCommand" {
+            self.apply_equip_command(handle, command_actor_id, event_name, &lua_params)
+                .await;
+            return;
+        }
         let Some(lua) = self.lua.as_ref() else {
             return;
         };

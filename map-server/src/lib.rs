@@ -38,6 +38,7 @@ mod achievement;
 mod actor;
 mod autotranslate;
 mod battle;
+mod command_actors;
 mod command_permissions;
 mod command_processor;
 mod config;
@@ -158,6 +159,10 @@ pub async fn run() -> Result<()> {
             return Err(e);
         }
     };
+    command_actors::init(
+        db.command_static_actors().await.unwrap_or_default(),
+        config.script_root(),
+    );
     match db.ping().await {
         Ok(()) => tracing::info!("DB connection ok"),
         Err(e) => {
