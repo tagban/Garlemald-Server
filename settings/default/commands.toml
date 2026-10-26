@@ -21,6 +21,8 @@ who = 0
 version = 0
 
 # GMs: moving players around, looking after them
+pos = 2
+endevent = 2
 zone = 2
 camp = 2
 warp = 2

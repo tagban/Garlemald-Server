@@ -72,6 +72,14 @@ camp = 0
 
 | Command | Does |
 | --- | --- |
-| `!zone <zone id or name> [name]` | To a zone's spawn point, or beside its aetheryte (`!zone central shroud`, `!zone 155`) |
+| `!pos [name]` | Where someone is: zone, coordinates, and the `!warp` that comes back there |
+| `!endevent [name]` | Free someone held by a conversation, cutscene or menu |
+| `!zone <zone id or name> [name]` | To a zone's spawn point, or beside its aetheryte (`!zone central shroud`, `!zone 155`, `!zone mordion`) |
 | `!camp [camp name] [name]` | To an aetheryte camp or gate by part of its name (`!camp bearded rock`); alone, lists the camps |
 | `!setgm <level> <name>` | Set the GM level of a character's account |
+
+Names don't need typing in full: any part works (`!camp bent`, a `*` is
+fine too), case and apostrophes don't matter (`!zone uldah`), several
+matches are listed, and a typo gets a "did you mean". The two places the
+client's auto-translate menu (Tab, [Places]) offers, Limsa Lominsa and Central
+Shroud, work as well.

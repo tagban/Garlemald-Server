@@ -10046,7 +10046,9 @@ impl PacketProcessor {
         // since `run-all.sh`-backgrounded map-servers have stdin tied
         // to /dev/null so the stdin path is dead in practice.
         if pkt.message.starts_with('!') {
-            let line = pkt.message[1..].to_string();
+            // auto-translate entries (Tab) arrive as bytes `message` drops
+            let text = crate::autotranslate::command_text(&pkt.raw_message);
+            let line = text.strip_prefix('!').unwrap_or(&text).to_string();
             tracing::info!(
                 session = session_id,
                 cmd = %line,

@@ -3602,14 +3602,17 @@ impl Database {
     /// Shroud) or internal name (sea0Town01) contains it, ignoring case: (id,
     /// place name), the exact place-name matches first.
     pub async fn zones_matching(&self, query: &str) -> Result<Vec<(u32, String)>> {
-        let q = query.trim().to_owned();
+        // apostrophes don't count ("uldah" finds Ul'dah), and a * is any
+        // part of a name already ("bent*" is "bent")
+        let q = query.trim().replace(['\'', '’', '*'], "");
         let rows = self
             .conn
             .call_db(move |c| {
                 let mut st = c.prepare(
                     r"SELECT id, placeName FROM server_zones
-                      WHERE CAST(id AS TEXT) = :q OR placeName LIKE '%' || :q || '%' OR zoneName LIKE '%' || :q || '%'
-                      ORDER BY (CAST(id AS TEXT) = :q) DESC, (placeName = :q COLLATE NOCASE) DESC, id",
+                      WHERE CAST(id AS TEXT) = :q OR REPLACE(placeName, '''', '') LIKE '%' || :q || '%'
+                         OR zoneName LIKE '%' || :q || '%'
+                      ORDER BY (CAST(id AS TEXT) = :q) DESC, (REPLACE(placeName, '''', '') = :q COLLATE NOCASE) DESC, id",
                 )?;
                 st.query_map(named_params! { ":q": q }, |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))?
                     .collect::<rusqlite::Result<Vec<_>>>()
