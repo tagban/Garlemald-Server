@@ -415,6 +415,15 @@ impl CommandProcessor {
                 return false;
             }
         };
+        // An empty classPath instantiates with no class name, which the
+        // 1.23b client dies on (same guard as the zone spawner).
+        if class.class_path.is_empty() {
+            tracing::warn!(
+                class = foe.class_id,
+                "worldend: spawn skipped — empty classPath (client-fatal instantiate)",
+            );
+            return false;
+        }
         let spawn = BattleNpcSpawn {
             position_x: x,
             position_y: y,
@@ -593,6 +602,17 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("xivlegacy-worldend-{}.db", std::process::id()));
         let db = Arc::new(crate::database::Database::open(&path).await.unwrap());
+        // Seed class paths the way seed/106 does, all but Atomos's, which
+        // has none: a class without one must be skipped, not sent.
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE gamedata_actor_class SET classPath = '/Chara/Npc/Monster/Test'
+                 WHERE id IN (2210901, 2207001, 2208701, 2108904, 2108901,
+                              2102806, 2202401, 2201607, 2203302)",
+                [],
+            )
+            .unwrap();
         let lua = Arc::new(crate::lua::LuaEngine::new("/nonexistent"));
         world
             .register_zone(crate::zone::zone::Zone::new(
@@ -639,7 +659,9 @@ mod tests {
 
         cmd.final_days = true;
         assert!(cmd.run("help").await.unwrap().contains("worldend"));
-        let per_spot: usize = ROSTER.iter().map(|f| f.count as usize).sum();
+        let atomos = ROSTER.iter().find(|f| f.class_id == 2111001).unwrap();
+        let per_spot =
+            ROSTER.iter().map(|f| f.count as usize).sum::<usize>() - atomos.count as usize;
         for _ in 0..3 {
             let on = cmd.run("worldend").await.unwrap();
             assert!(on.starts_with("worldend on"), "{on}");
