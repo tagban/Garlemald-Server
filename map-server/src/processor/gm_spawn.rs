@@ -19,8 +19,8 @@
 //! gamedata, and a path the client has no script for crashes it, so this is
 //! how candidate paths get tried. The genus (server_battlenpc_genus) comes
 //! from the path's family folder, then from other spawns of the same monster
-//! family; `genus=` sets it when neither knows. GM spawns never respawn;
-//! `!despawn` removes the ones in your zone.
+//! family, then a table of the rest; `genus=` overrides it. GM spawns never
+//! respawn; `!despawn` removes the ones in your zone.
 //!
 //! `!kill` defeats your target, or the nearest monster (`!kill all`: every
 //! monster within 20 yalms), through the normal death path: EXP, seals and
@@ -45,6 +45,41 @@ const MAX_COUNT: usize = 8;
 static NEXT_NUMBER: AtomicU32 = AtomicU32::new(FIRST_NUMBER);
 /// (zone, actor id) of every live GM spawn, for `!despawn`.
 static SPAWNED: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
+
+/// The genus of monster families no seeded spawn uses (so no pool to copy
+/// it from), by the family digits of the class id; anything else counts as
+/// a person.
+fn family_genus(class_id: u32) -> u32 {
+    match (class_id / 100) % 1000 {
+        1 => 45,   // puk
+        4 => 44,   // hippogryph
+        6 => 37,   // gnat
+        8 => 8,    // buffalo
+        12 => 41,  // vulture
+        18 => 47,  // the damned
+        19 => 48,  // wight
+        22 => 30,  // drake
+        26 => 52,  // imp
+        30 => 33,  // antling
+        32 => 5,   // coeurl
+        34 => 63,  // flan
+        44 => 61,  // phurble
+        46 => 54,  // fire elemental
+        47 => 58,  // ice elemental
+        48 => 59,  // wind elemental
+        49 => 56,  // earth elemental
+        50 => 57,  // lightning elemental
+        51 => 55,  // water elemental
+        53 => 34,  // swarm
+        55 => 39,  // yarzon
+        64 => 24,  // Ixal
+        66 => 27,  // kobold
+        67 => 28,  // sylph
+        99 => 53,  // will-o'-the-wisp
+        100 => 62, // plasmoid
+        _ => 29,   // person
+    }
+}
 
 fn next_number() -> u32 {
     let n = NEXT_NUMBER.fetch_add(1, Ordering::Relaxed);
@@ -172,11 +207,7 @@ impl PacketProcessor {
                     .flatten()
                 {
                     Some(g) => g,
-                    None => {
-                        return Some(Err(format!(
-                            "no genus known for class {class_id}; give one with genus=<id>"
-                        )));
-                    }
+                    None => family_genus(class_id),
                 },
             },
         };
