@@ -6040,6 +6040,14 @@ impl PacketProcessor {
             message_id,
             "DoEmote applied + broadcast",
         );
+        crate::command_processor::world_end::on_emote(
+            actor_id,
+            target_actor_id,
+            emote_id,
+            &self.registry,
+            &self.world,
+        )
+        .await;
     }
 
     /// `player:SetSNpc(nickname, actorClassId, classType)` apply

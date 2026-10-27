@@ -20,6 +20,7 @@ starting, so a typo never quietly switches a feature off.
 | --- | --- | --- |
 | [status](status/) | on | `GET /status`: players online and recently active characters, for websites |
 | [welcome](welcome/) | off | A welcome message when a player enters the world; an example to copy |
+| [finaldays](finaldays/) | off | GM event commands recreating the end of 1.0 (`!worldend`) |
 
 ## Lua hooks
 

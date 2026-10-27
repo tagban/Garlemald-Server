@@ -856,6 +856,16 @@ pub async fn apply_runtime_lua_command(
                     world, registry, actor_id, bytes,
                 )
                 .await;
+                // the Bombard King of `worldend` only falls to /firedance (boxed: its
+                // death runs back through this applier)
+                Box::pin(crate::command_processor::world_end::on_emote(
+                    actor_id,
+                    target_actor_id,
+                    emote_id,
+                    registry,
+                    world,
+                ))
+                .await;
             }
             true
         }
