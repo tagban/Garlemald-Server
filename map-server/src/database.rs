@@ -5618,7 +5618,7 @@ mod battle_npc_spawn_tests {
         // running the suite twice in quick succession (or with
         // --test-threads=N) otherwise hits the same path and tokio's
         // SQLite "file is locked" error fires from a stale WAL.
-        std::env::temp_dir().join(format!(
+        common::test_tmp::dir().join(format!(
             "garlemald-battle-npc-spawn-{label}-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5839,7 +5839,7 @@ mod achievement_persist_tests {
     use super::*;
 
     fn tempdb(label: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
+        common::test_tmp::dir().join(format!(
             "garlemald-achievement-{label}-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5966,7 +5966,7 @@ mod equip_from_package_tests {
     use super::*;
 
     fn tempdb(label: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
+        common::test_tmp::dir().join(format!(
             "garlemald-equip-from-package-{label}-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -6077,7 +6077,7 @@ mod key_item_tests {
     use common::db::ConnCallExt;
 
     fn tempdb(label: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
+        common::test_tmp::dir().join(format!(
             "garlemald-key-item-{label}-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -6150,7 +6150,7 @@ mod add_harvest_item_stack_cap_tests {
     use common::db::ConnCallExt;
 
     fn tempdb(label: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
+        common::test_tmp::dir().join(format!(
             "garlemald-harvest-cap-{label}-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

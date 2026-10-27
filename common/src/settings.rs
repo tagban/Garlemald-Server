@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn files_layer_and_missing_ones_are_skipped() {
-        let dir = std::env::temp_dir().join(format!("xivl-settings-{}", std::process::id()));
+        let dir = crate::test_tmp::dir().join(format!("xivl-settings-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("default")).unwrap();
         std::fs::write(dir.join("default/t.toml"), "[server]\nport = 54994\n").unwrap();
         let over = dir.join("mine.toml");

@@ -178,7 +178,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn temp_script(name: &str, body: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("garlemald-lua-{}", uuid_like()));
+        let dir = common::test_tmp::dir().join(format!("garlemald-lua-{}", uuid_like()));
         std::fs::create_dir_all(dir.join("commands/gm")).unwrap();
         let path = dir.join(format!("commands/gm/{name}.lua"));
         std::fs::write(&path, body).unwrap();

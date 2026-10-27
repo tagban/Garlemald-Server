@@ -230,7 +230,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("garlemald-onkillbnpc-{nanos}"));
+        let dir = common::test_tmp::dir().join(format!("garlemald-onkillbnpc-{nanos}"));
         std::fs::create_dir_all(dir.join("quests/man")).unwrap();
         dir
     }
@@ -288,7 +288,7 @@ mod tests {
         let registry = ActorRegistry::new();
         registry.insert(handle.clone()).await;
         let world = WorldManager::new();
-        let db_path = std::env::temp_dir().join(format!(
+        let db_path = common::test_tmp::dir().join(format!(
             "garlemald-quest-hook-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -334,7 +334,7 @@ mod tests {
         let registry = ActorRegistry::new();
         registry.insert(handle.clone()).await;
         let world = WorldManager::new();
-        let db_path = std::env::temp_dir().join(format!(
+        let db_path = common::test_tmp::dir().join(format!(
             "garlemald-quest-hook-empty-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -394,7 +394,7 @@ mod tests {
         registry.insert(handle.clone()).await;
         let world = WorldManager::new();
 
-        let db_path = std::env::temp_dir().join(format!(
+        let db_path = common::test_tmp::dir().join(format!(
             "garlemald-quest-hook-drain-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
