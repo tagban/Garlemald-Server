@@ -9,6 +9,8 @@ A server for **FINAL FANTASY XIV v1.23b**, the final patch of the original
 
 **Community:** questions, testing and news on the [XIVLegacy Discord](https://discord.gg/D9k3khqvy8).
 
+**A passion project.** XIVLegacy preserves FINAL FANTASY XIV as it was in 1.0 so people can walk through it again — and seeing the original up close may help explain why Square Enix rebuilt it as *A Realm Reborn*. If you enjoy old Eorzea, please play the game today: FINAL FANTASY XIV has a [free trial](https://freetrial.finalfantasyxiv.com/) with no time limit.
+
 **Where it comes from.** XIVLegacy Server is derived from the original
 community server work: it is a fork of
 [Garlemald Server](https://github.com/swstegall/Garlemald-Server) by Samuel
