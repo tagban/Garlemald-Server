@@ -44,6 +44,9 @@ pub struct CommandProcessor {
     pub registry: Arc<ActorRegistry>,
     pub db: Arc<Database>,
     pub lua: Arc<LuaEngine>,
+    /// The finaldays module (`worldend`, `finale`) is enabled: without it
+    /// those commands don't exist.
+    pub final_days: bool,
 }
 
 impl CommandProcessor {
@@ -58,6 +61,7 @@ impl CommandProcessor {
             registry,
             db,
             lua,
+            final_days: crate::modules::is_enabled(world_end::MODULE),
         }
     }
 
@@ -115,6 +119,15 @@ impl CommandProcessor {
             other => other,
         }
         .to_string();
+        if !self.final_days && world_end::COMMANDS.contains(&cmd.as_str()) {
+            return Ok(match level {
+                Some(_) => format!("unknown command: !{cmd} (!help lists yours)"),
+                None => format!(
+                    "unknown command: {cmd} (it comes with the {} module, which is off)",
+                    world_end::MODULE
+                ),
+            });
+        }
         let perms = crate::command_permissions::get();
         if let Some(level) = level
             && level < perms.required(&cmd)
@@ -129,7 +142,7 @@ impl CommandProcessor {
             Args::new(rest, invoker).self_only(level.is_some_and(|l| l < perms.target_others));
 
         let response = match cmd.as_str() {
-            "help" => Self::help(level),
+            "help" => Self::help(level, self.final_days),
             "version" => format!("map-server {}", env!("CARGO_PKG_VERSION")),
             "who" => format!("{} zone(s) loaded", self.world.zone_count().await),
             "reload" => {
@@ -205,8 +218,9 @@ impl CommandProcessor {
         Ok(response)
     }
 
-    /// The commands `level` may use (all of them on the console).
-    fn help(level: Option<u8>) -> String {
+    /// The commands `level` may use (all of them on the console), leaving
+    /// out the finaldays module's while it's off.
+    fn help(level: Option<u8>, final_days: bool) -> String {
         const ALL: &[&str] = &[
             "help",
             "who",
@@ -279,7 +293,8 @@ impl CommandProcessor {
             .iter()
             .filter(|c| {
                 let name = c.split_whitespace().next().unwrap_or("");
-                level.is_none_or(|l| l >= perms.required(name))
+                (final_days || !world_end::COMMANDS.contains(&name))
+                    && level.is_none_or(|l| l >= perms.required(name))
             })
             .copied()
             .collect();
@@ -1910,9 +1925,9 @@ mod tests {
     #[test]
     fn help_lists_only_what_the_level_may_use() {
         // without settings every command needs administrator
-        let player = CommandProcessor::help(Some(0));
+        let player = CommandProcessor::help(Some(0), false);
         assert!(player.starts_with("your level: player (0)") && !player.contains("givegil"));
-        let console = CommandProcessor::help(None);
+        let console = CommandProcessor::help(None, false);
         assert!(console.contains("givegil") && console.contains("zone <zone id or name>"));
     }
 

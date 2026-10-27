@@ -16,9 +16,11 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 static HOOKS: OnceLock<Vec<(String, PathBuf, Vec<String>)>> = OnceLock::new();
+static ENABLED: OnceLock<Vec<String>> = OnceLock::new();
 
-/// Remember the enabled modules that have Lua hooks.
+/// Remember the enabled modules, and the Lua hooks they have.
 pub fn init(modules: &[common::modules::Module]) {
+    let _ = ENABLED.set(modules.iter().map(|m| m.name.clone()).collect());
     let hooks = modules
         .iter()
         .filter_map(|m| Some((m.name.clone(), m.lua.clone()?, m.hooks.clone())))
@@ -40,4 +42,11 @@ pub fn with_hook(hook: &str) -> Vec<(String, PathBuf)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Whether the module `name` is enabled (false before `init`).
+pub fn is_enabled(name: &str) -> bool {
+    ENABLED
+        .get()
+        .is_some_and(|all| all.iter().any(|n| n == name))
 }

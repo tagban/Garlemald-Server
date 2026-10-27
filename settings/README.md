@@ -92,7 +92,7 @@ camp = 0
 | `!addquest` `!completequest` `!delquest <quest id> [name]` | Quests |
 | `!addtitle <id>` `!addeffect <status id> [seconds]` `!addallaetherytes` | Titles, status effects, every aetheryte |
 | `!setmusic <id> [name]` / `!setweather <id>` | Music for someone / weather for your zone |
-| `!worldend` | 1.0's Final Days: Nael van Darnus, his Imperials, Atomos and other level 70-80 monsters around you and in each city (the Bombard King only falls to /firedance). Again to end it |
+| `!worldend` | (finaldays module, off by default) 1.0's Final Days: Nael van Darnus, his Imperials, Atomos and other level 70-80 monsters around you and in each city (the Bombard King only falls to /firedance). Again to end it |
 
 The FFXI server's names work too: `!where`, `!ver`, `!raise`, `!kill`,
 `!release`, `!promote`, `!homepoint`, `!giveitem`, `!givekeyitem`,

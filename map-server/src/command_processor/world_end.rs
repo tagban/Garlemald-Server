@@ -18,11 +18,21 @@
 //! The monsters are built straight from their actor classes (no
 //! `server_battlenpc_*` rows): the classes and their looks are already in the
 //! game data, the combat numbers are set here.
+//!
+//! None of this is retail behavior, so it lives in the `finaldays` module:
+//! with the module off (the default) the command doesn't exist.
 
 use std::collections::{HashMap, HashSet};
 
 use super::{Args, CommandProcessor};
 use crate::database::BattleNpcSpawn;
+
+/// The module these commands come with (modules/finaldays). Off by default:
+/// until an operator enables it the commands don't exist.
+pub(crate) const MODULE: &str = "finaldays";
+
+/// The commands of the finaldays module.
+pub(crate) const COMMANDS: &[&str] = &["worldend"];
 
 /// One kind of monster in the onslaught.
 struct Foe {
@@ -533,7 +543,17 @@ mod tests {
                 None,
             ))
             .await;
-        let cmd = CommandProcessor::new(world, registry.clone(), db, lua);
+        let mut cmd = CommandProcessor::new(world, registry.clone(), db, lua);
+        // module off (the default): no such command, nothing spawned
+        let off = cmd.run("worldend").await.unwrap();
+        assert!(off.starts_with("unknown command: worldend"), "{off}");
+        let chat = cmd.run_as_player("worldend", "Some One", 4).await.unwrap();
+        assert_eq!(chat, "unknown command: !worldend (!help lists yours)");
+        assert!(!cmd.run("help").await.unwrap().contains("worldend"));
+        assert!(registry.actors_in_zone(230).await.is_empty());
+
+        cmd.final_days = true;
+        assert!(cmd.run("help").await.unwrap().contains("worldend"));
         let per_spot: usize = ROSTER.iter().map(|f| f.count as usize).sum();
         for _ in 0..3 {
             let on = cmd.run("worldend").await.unwrap();

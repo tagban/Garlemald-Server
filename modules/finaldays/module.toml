@@ -1,0 +1,3 @@
+name = "finaldays"
+version = "1.0"
+description = "GM event commands recreating the end of 1.0: !worldend sets the Final Days monsters on the cities (and takes them away again)"
