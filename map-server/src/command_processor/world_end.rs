@@ -34,7 +34,18 @@ pub(crate) const MODULE: &str = "finaldays";
 /// The commands of the finaldays module.
 pub(crate) const COMMANDS: &[&str] = &["worldend"];
 
-/// One kind of monster in the onslaught.
+/// How a spawned actor behaves.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Role {
+    /// Hunts players.
+    Hostile,
+    /// The Bombard King: harmless, and only /firedance hurts it.
+    FiredanceOnly,
+    /// The goobbue wall: stands its ground, never attacks, never falls.
+    Defender,
+}
+
+/// One kind of actor in the event.
 struct Foe {
     /// gamedata_actor_class id (its displayNameId gives the name).
     class_id: u32,
@@ -42,8 +53,7 @@ struct Foe {
     level: u32,
     hp: u32,
     count: u32,
-    /// The Bombard King: harmless, and only /firedance hurts it.
-    firedance_only: bool,
+    role: Role,
 }
 
 const fn foe(class_id: u32, tag: &'static str, level: u32, hp: u32, count: u32) -> Foe {
@@ -53,7 +63,7 @@ const fn foe(class_id: u32, tag: &'static str, level: u32, hp: u32, count: u32) 
         level,
         hp,
         count,
-        firedance_only: false,
+        role: Role::Hostile,
     }
 }
 
@@ -79,9 +89,30 @@ const ROSTER: &[Foe] = &[
         level: 80,
         hp: 30000,
         count: 1,
-        firedance_only: true,
+        role: Role::FiredanceOnly,
     },
 ];
+
+/// The Great Goobbue Wall: on 1.0's last night players lined their goobbue
+/// mounts up outside Ul'dah's gates against the onslaught. Those were
+/// players' mounts; the wall here is goobbues on their own (an NPC can't be
+/// shown riding one), standing in a row where the Gate of Nald opens onto
+/// Central Thanalan.
+const GOOBBUE: Foe = Foe {
+    class_id: 2203302, // Goobbue
+    tag: "worldend_goobbue",
+    level: 50,
+    hp: 5000,
+    count: 12,
+    role: Role::Defender,
+};
+
+/// (zone, x, y, z, rotation) of the middle of the wall: Central Thanalan's
+/// arrival point from Ul'dah, facing out of the city.
+const GOOBBUE_WALL: (u32, f32, f32, f32, f32) = (170, -27.015, 181.798, -79.72, 2.513);
+
+/// Yalms between goobbues in the wall.
+const WALL_SPACING: f32 = 3.0;
 
 /// Where the cities get their share: (zone, x, y, z). The aetheryte plazas
 /// (the `camp` spots) and a busy square in the other half of each city.
@@ -193,6 +224,19 @@ fn ring(x: f32, z: f32, n: usize) -> Vec<(f32, f32, f32)> {
         .collect()
 }
 
+/// Spots for `n` goobbues in a row through (x, z), side by side, all facing
+/// `rotation` (forward is (sin r, cos r), as for the ring).
+fn wall(x: f32, z: f32, rotation: f32, n: usize) -> Vec<(f32, f32, f32)> {
+    let (side_x, side_z) = (rotation.cos(), -rotation.sin());
+    let middle = (n as f32 - 1.0) / 2.0;
+    (0..n)
+        .map(|i| {
+            let off = (i as f32 - middle) * WALL_SPACING;
+            (x + side_x * off, z + side_z * off, rotation)
+        })
+        .collect()
+}
+
 /// A /firedance by `dancer` at `target`: when that's a Bombard King of the
 /// event, it takes the hit, and the tenth one brings it down. Called from
 /// both emote paths.
@@ -256,7 +300,7 @@ impl CommandProcessor {
             drop(st);
             self.announce_all("The skies clear. Dalamud's onslaught is over... for now.")
                 .await;
-            return format!("worldend off: {n} monster(s) removed");
+            return format!("worldend off: {n} actor(s) removed");
         }
 
         // around the GM, then each city (except the zone the GM is in)
@@ -302,7 +346,7 @@ impl CommandProcessor {
                     break;
                 };
                 if self.spawn_foe(foe, zone, id, (px, y, pz, rot)).await {
-                    st.record(id, foe.firedance_only);
+                    st.record(id, foe.role == Role::FiredanceOnly);
                     any = true;
                 }
             }
@@ -315,6 +359,28 @@ impl CommandProcessor {
             st.end();
             return "worldend: nothing could be spawned (no zones loaded?)".into();
         }
+
+        // and the goobbues lined up at Ul'dah's gate
+        let (wz, wx, wy, wzz, wrot) = GOOBBUE_WALL;
+        let mut goobbues = 0;
+        if self.world.zone(wz).await.is_some() {
+            let in_use: HashSet<u32> = self
+                .registry
+                .actors_in_zone(wz)
+                .await
+                .iter()
+                .map(|h| h.actor_id)
+                .collect();
+            for (px, pz, rot) in wall(wx, wzz, wrot, GOOBBUE.count as usize) {
+                let Some(id) = st.next_actor_id(wz, &in_use) else {
+                    break;
+                };
+                if self.spawn_foe(&GOOBBUE, wz, id, (px, wy, pz, rot)).await {
+                    st.record(id, false);
+                    goobbues += 1;
+                }
+            }
+        }
         drop(st);
         self.announce_all(
             "Dalamud's red light fills the sky. Nael van Darnus and the beasts of the \
@@ -322,8 +388,9 @@ impl CommandProcessor {
         )
         .await;
         format!(
-            "worldend on: {n} monster(s) in {zones} zone(s); \
-             the Bombard King only falls to /firedance. !worldend again ends it"
+            "worldend on: {n} monster(s) in {zones} zone(s) and {goobbues} goobbue(s) \
+             at Ul'dah's gate; the Bombard King only falls to /firedance. \
+             !worldend again ends it"
         )
     }
 
@@ -360,8 +427,8 @@ impl CommandProcessor {
             zone_id: zone,
             actor_class_id: foe.class_id,
             combat_delay: 3000,
-            // the Bombard King did no harm; everything else hunts players
-            aggro_type: u8::from(!foe.firedance_only),
+            // the Bombard King and the goobbues do no harm
+            aggro_type: u8::from(foe.role == Role::Hostile),
             detection: 0x01 | 0x04 | 0x10, // sight, sound, any level
             ..Default::default()
         };
@@ -397,8 +464,9 @@ impl CommandProcessor {
         bnpc.apply_spawn_metadata(&spawn, 0, id, None);
         let mut character = bnpc.npc.character.clone();
         character.chara.respawn_disabled = true;
-        if foe.firedance_only {
-            // weapons and spells leave it at 1 HP; /firedance does the rest
+        if foe.role != Role::Hostile {
+            // weapons and spells leave it at 1 HP (the Bombard King falls to
+            // /firedance; the goobbue wall doesn't fall)
             character
                 .chara
                 .mods
@@ -543,6 +611,23 @@ mod tests {
                 None,
             ))
             .await;
+        world
+            .register_zone(crate::zone::zone::Zone::new(
+                170,
+                "wil0Field01",
+                104,
+                "/Area/Zone/ZoneMasterWilW0",
+                0,
+                0,
+                0,
+                false,
+                false,
+                false,
+                false,
+                false,
+                None,
+            ))
+            .await;
         let mut cmd = CommandProcessor::new(world, registry.clone(), db, lua);
         // module off (the default): no such command, nothing spawned
         let off = cmd.run("worldend").await.unwrap();
@@ -560,11 +645,31 @@ mod tests {
             assert!(on.starts_with("worldend on"), "{on}");
             let here = registry.actors_in_zone(230).await;
             assert_eq!(here.len(), per_spot, "{on}");
+            let wall = registry.actors_in_zone(170).await;
+            assert_eq!(wall.len(), GOOBBUE.count as usize, "{on}");
             let off = cmd.run("worldend").await.unwrap();
-            assert_eq!(off, format!("worldend off: {per_spot} monster(s) removed"));
+            let all = per_spot + GOOBBUE.count as usize;
+            assert_eq!(off, format!("worldend off: {all} actor(s) removed"));
             assert!(registry.actors_in_zone(230).await.is_empty());
+            assert!(registry.actors_in_zone(170).await.is_empty());
         }
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn the_goobbue_wall_is_a_straight_row_across_the_facing() {
+        let rot = 0.7_f32;
+        let row = wall(10.0, 20.0, rot, 4);
+        assert_eq!(row.len(), 4);
+        let (fx, fz) = (rot.sin(), rot.cos());
+        for w in row.windows(2) {
+            let (dx, dz) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+            assert!(((dx * dx + dz * dz).sqrt() - WALL_SPACING).abs() < 1e-4);
+            assert!((dx * fx + dz * fz).abs() < 1e-4, "sideways, not forward");
+        }
+        let (mx, mz) = row.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
+        assert!((mx / 4.0 - 10.0).abs() < 1e-4 && (mz / 4.0 - 20.0).abs() < 1e-4);
+        assert!(row.iter().all(|p| p.2 == rot));
     }
 
     #[test]
