@@ -45,6 +45,12 @@ enum Role {
     Defender,
 }
 
+/// The red sky of 1.0's last days: Dalamud overhead, lightning now and
+/// then (8030 is the same sky without the lightning).
+const WEATHER_DALAMUD_THUNDER: u16 = 8032;
+/// Weather transition when the sky changes in place.
+const WEATHER_FADE: u16 = 5;
+
 /// One kind of actor in the event.
 struct Foe {
     /// gamedata_actor_class id (its displayNameId gives the name).
@@ -298,6 +304,8 @@ impl CommandProcessor {
                 .await;
             }
             drop(st);
+            let weather = self.world.set_weather_override(None);
+            self.set_weather_all(weather).await;
             self.announce_all("The skies clear. Dalamud's onslaught is over... for now.")
                 .await;
             return format!("worldend off: {n} actor(s) removed");
@@ -382,6 +390,10 @@ impl CommandProcessor {
             }
         }
         drop(st);
+        let weather = self
+            .world
+            .set_weather_override(Some(WEATHER_DALAMUD_THUNDER));
+        self.set_weather_all(weather).await;
         self.announce_all(
             "Dalamud's red light fills the sky. Nael van Darnus and the beasts of the \
              Seventh Umbral Era descend upon Eorzea!",
@@ -394,6 +406,24 @@ impl CommandProcessor {
         )
     }
 
+    /// Change the sky for everyone in the world, as it changes in place.
+    async fn set_weather_all(&self, weather: u16) {
+        for s in self.world.all_sessions().await {
+            if let (Some(h), Some(client)) = (
+                self.registry.by_session(s.id).await,
+                self.world.client(s.id).await,
+            ) {
+                let mut pkt = crate::packets::send::misc::build_set_weather(
+                    h.actor_id,
+                    weather,
+                    WEATHER_FADE,
+                );
+                pkt.set_target_id(s.id);
+                client.send_bytes(pkt.to_bytes()).await;
+            }
+        }
+    }
+
     async fn announce_all(&self, text: &str) {
         for s in self.world.all_sessions().await {
             if let Some(h) = self.registry.by_session(s.id).await {
@@ -402,8 +432,8 @@ impl CommandProcessor {
         }
     }
 
-    /// Builds one monster at `id` from its actor class, puts it in the zone
-    /// and shows it to the players around. Mirrors the processor's
+    /// Builds one monster at `id` from its actor class and puts it in the
+    /// zone, where the in-range streaming shows it to the players around. Mirrors the processor's
     /// `apply_spawn_battle_npc_by_id`, with the numbers from the roster in
     /// place of the server_battlenpc_* rows.
     async fn spawn_foe(&self, foe: &Foe, zone: u32, id: u32, at: (f32, f32, f32, f32)) -> bool {
@@ -510,14 +540,9 @@ impl CommandProcessor {
                 character,
             ))
             .await;
-        crate::runtime::dispatcher::spawn_bundle_fanout(
-            &self.world,
-            &self.registry,
-            &zone_arc,
-            zone,
-            id,
-        )
-        .await;
+        // Players nearby get it from the regular in-range streaming; sending
+        // the spawn bundle here as well adds the actor twice, which crashes
+        // the client.
         true
     }
 }
@@ -648,7 +673,7 @@ mod tests {
                 None,
             ))
             .await;
-        let mut cmd = CommandProcessor::new(world, registry.clone(), db, lua);
+        let mut cmd = CommandProcessor::new(world.clone(), registry.clone(), db, lua);
         // module off (the default): no such command, nothing spawned
         let off = cmd.run("worldend").await.unwrap();
         assert!(off.starts_with("unknown command: worldend"), "{off}");
@@ -665,6 +690,7 @@ mod tests {
         for _ in 0..3 {
             let on = cmd.run("worldend").await.unwrap();
             assert!(on.starts_with("worldend on"), "{on}");
+            assert_eq!(world.weather_id(), WEATHER_DALAMUD_THUNDER);
             let here = registry.actors_in_zone(230).await;
             assert_eq!(here.len(), per_spot, "{on}");
             let wall = registry.actors_in_zone(170).await;
@@ -674,6 +700,7 @@ mod tests {
             assert_eq!(off, format!("worldend off: {all} actor(s) removed"));
             assert!(registry.actors_in_zone(230).await.is_empty());
             assert!(registry.actors_in_zone(170).await.is_empty());
+            assert_eq!(world.weather_id(), 1, "the configured sky comes back");
         }
         let _ = std::fs::remove_file(path);
     }

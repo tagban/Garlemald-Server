@@ -12,6 +12,11 @@ enabled = ["status", "finaldays"]
 | --- | --- | --- |
 | `!worldend` | senior GM (3) | Spawns the Final Days monsters around you and in both halves of each city: three Nael van Darnus with Imperial centurions, Atomos, Bixie, Number 126 and 128, the Great Oak, an Imperial juggernaut and the Bombard King (levels 70-80). Run it again to remove all of them. |
 
+While it runs, every zone shows the red sky of 1.0's last days: Dalamud
+overhead and lightning now and then (weather 8032). Players who log in or
+change zones during the event get it too; ending the event brings back the
+weather from `[world]` in `settings/map.toml`.
+
 It also lines 12 goobbues up where the Gate of Nald opens onto Central
 Thanalan, facing out: the Great Goobbue Wall players made with their mounts
 on 1.0's last night (an NPC can't be shown riding one, so they stand on their
