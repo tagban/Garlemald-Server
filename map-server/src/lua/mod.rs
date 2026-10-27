@@ -1595,7 +1595,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = common::test_tmp::dir().join(format!("garlemald-lua-engine-{nanos}"));
+        // the clock can repeat between parallel tests
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = common::test_tmp::dir().join(format!("garlemald-lua-engine-{nanos}-{seq}"));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
