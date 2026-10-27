@@ -1098,6 +1098,9 @@ impl Default for WorldSettings {
 pub struct WorldManager {
     /// Server-global world tunables (Dalamud phase, weather) from config.
     world_settings: WorldSettings,
+    /// Weather every zone shows in place of `world_settings.weather_id`
+    /// while an event holds it (0 = none), e.g. `!worldend`'s Dalamud sky.
+    weather_override: std::sync::atomic::AtomicU16,
 
     zones: RwLock<HashMap<u32, Arc<RwLock<Zone>>>>,
 
@@ -1143,6 +1146,7 @@ impl WorldManager {
     pub fn new() -> Self {
         Self {
             world_settings: WorldSettings::default(),
+            weather_override: std::sync::atomic::AtomicU16::new(0),
             zones: RwLock::new(HashMap::new()),
             zone_entrances: RwLock::new(HashMap::new()),
             seamless_boundaries: RwLock::new(HashMap::new()),
@@ -1158,6 +1162,25 @@ impl WorldManager {
     pub fn with_world_settings(mut self, settings: WorldSettings) -> Self {
         self.world_settings = settings;
         self
+    }
+
+    /// The weather players get when they arrive in a zone.
+    pub fn weather_id(&self) -> u16 {
+        match self
+            .weather_override
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => self.world_settings.weather_id,
+            w => w,
+        }
+    }
+
+    /// Hold every zone at `weather` (or `None` to go back to the
+    /// configured weather); returns the weather now in force.
+    pub fn set_weather_override(&self, weather: Option<u16>) -> u16 {
+        self.weather_override
+            .store(weather.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+        self.weather_id()
     }
 
     /// Resolve a gather node's `(harvest_node_id, harvest_type)` from
@@ -2171,7 +2194,7 @@ impl WorldManager {
             self.world_settings.dalamud_phase,
             music_id,
             0x01,
-            self.world_settings.weather_id,
+            self.weather_id(),
             self.world_settings.weather_transition,
             region_id,
             zone_actor_id,
@@ -3521,7 +3544,7 @@ impl WorldManager {
                 self.world_settings.dalamud_phase,
                 bgm_day,
                 0x04,
-                self.world_settings.weather_id,
+                self.weather_id(),
                 self.world_settings.weather_transition,
                 region_id,
                 zone_actor_id,
