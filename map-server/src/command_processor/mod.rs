@@ -37,6 +37,7 @@ use crate::runtime::actor_registry::ActorRegistry;
 use crate::world_manager::WorldManager;
 
 mod gm_tools;
+pub(crate) mod world_end;
 
 pub struct CommandProcessor {
     pub world: Arc<WorldManager>,
@@ -195,6 +196,7 @@ impl CommandProcessor {
             "pushtrigger" => self.handle_pushtrigger(&args).await,
             "setseq" => self.handle_setseq(&args).await,
             "speed" => self.handle_speed(&args).await,
+            "worldend" => self.handle_worldend(&args).await,
             other => format!("unknown command: {other} (args={:?})", args.rest()),
         };
         if args.was_refused() {
@@ -242,6 +244,7 @@ impl CommandProcessor {
             "addallaetherytes [name]",
             "setmusic <music id> [name]",
             "setweather <weather id>",
+            "worldend",
             "zone <zone id or name> [name]",
             "camp [camp name] [name]",
             "warp <x> <y> <z> [name] | warp <zone> <x> <y> <z> [name]",

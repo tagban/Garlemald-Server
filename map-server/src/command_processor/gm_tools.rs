@@ -43,7 +43,7 @@ fn home_city(town: u32) -> u32 {
 
 impl CommandProcessor {
     /// (zone, x, y, z, rotation) of an online character.
-    async fn spot_of(&self, chara_id: u32) -> Option<(u32, f32, f32, f32, f32)> {
+    pub(super) async fn spot_of(&self, chara_id: u32) -> Option<(u32, f32, f32, f32, f32)> {
         let handle = self.registry.get(chara_id).await?;
         let c = handle.character.read().await;
         Some((
@@ -56,7 +56,7 @@ impl CommandProcessor {
     }
 
     /// The invoker's character id (chat commands only).
-    async fn invoker_id(&self, args: &Args<'_>) -> Result<u32, String> {
+    pub(super) async fn invoker_id(&self, args: &Args<'_>) -> Result<u32, String> {
         let me = args
             .invoker
             .ok_or("this command needs a character: use it in game")?;
@@ -88,7 +88,7 @@ impl CommandProcessor {
     }
 
     /// A system message in one player's chat log.
-    async fn tell_player(&self, actor_id: u32, message: String) {
+    pub(super) async fn tell_player(&self, actor_id: u32, message: String) {
         use crate::social::{ChatKind, SocialEvent, SocialOutbox, dispatch_social_event};
         let mut ob = SocialOutbox::new();
         ob.push(SocialEvent::ChatSystemToPlayer {
