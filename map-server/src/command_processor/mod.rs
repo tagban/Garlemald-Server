@@ -836,6 +836,13 @@ impl CommandProcessor {
     /// current zone), optionally into a private area: the same zone change a
     /// GM warp makes in retail (spawn type 2).
     #[allow(clippy::too_many_arguments)]
+    /// The spawn type GM warps arrive with: 0, SPAWNTYPE_FADEIN, which keeps
+    /// the screen black until the player is in. With Meteor's 2
+    /// (SPAWNTYPE_WARP_DUTY) the client draws the new zone through the
+    /// whole load from a placeholder camera at floor level, before the
+    /// player exists, so walking meanwhile looked like a broken camera.
+    const SPAWN_FADE_IN: u8 = 0;
+
     async fn teleport(
         &self,
         name: &str,
@@ -889,7 +896,7 @@ impl CommandProcessor {
             session.destination_x = x;
             session.destination_y = y;
             session.destination_z = z;
-            session.destination_spawn_type = 2; // retail "warp by gm" code
+            session.destination_spawn_type = Self::SPAWN_FADE_IN;
             self.world.upsert_session(session).await;
         }
         // Same-zone warp — Meteor `WorldManager.DoPlayerMoveInZone`:
@@ -926,7 +933,7 @@ impl CommandProcessor {
                 zone_id,
                 private_area.clone(),
                 private_area_type,
-                2, // retail "warp by gm" spawn code
+                Self::SPAWN_FADE_IN,
                 x,
                 y,
                 z,
