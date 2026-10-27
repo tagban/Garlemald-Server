@@ -9125,8 +9125,9 @@ impl PacketProcessor {
         let actor_id = handle.actor_id;
 
         // Round 7h: the basic attack must not accept FRIENDLY targets —
-        // players could soft-target THEMSELVES or an escort Ally (Sisipu)
-        // and auto-attack them down. Mirrors ValidTarget::ENEMY for the
+        // players could soft-target THEMSELVES, an escort Ally (Sisipu) or
+        // a townsperson / quest giver (Npc) and auto-attack them down.
+        // Mirrors ValidTarget::ENEMY for the
         // basic attack (battle/target_find.rs can_target is only applied
         // to AOE fan-out, never the primary target). Resolved before the
         // player write lock to avoid holding two actor locks.
@@ -9136,6 +9137,8 @@ impl PacketProcessor {
                     t.kind,
                     crate::runtime::actor_registry::ActorKindTag::Player
                         | crate::runtime::actor_registry::ActorKindTag::Ally
+                        | crate::runtime::actor_registry::ActorKindTag::Npc
+                        | crate::runtime::actor_registry::ActorKindTag::Pet
                 ),
                 None => false,
             }
