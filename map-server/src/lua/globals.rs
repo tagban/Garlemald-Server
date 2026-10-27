@@ -146,10 +146,46 @@ pub fn install_globals(
             t.set("difficulty", gd.difficulty)?;
             t.set("leveType", gd.leve_type)?;
             t.set("rewardExp", gd.reward_exp)?;
-            t.set("rewardGil", gd.reward_gil)?;
+            // battle leves carry no amount; show the one-star payout
+            let gil = if gd.reward_gil == 0 && gd.class_type == 1 {
+                crate::leve::battle::reward_gil(gd.level, 1).max(0) as u32
+            } else {
+                gd.reward_gil
+            };
+            t.set("rewardGil", gil)?;
+            t.set("classType", gd.class_type)?;
+            t.set("location", gd.location)?;
+            t.set("level", gd.level)?;
+            t.set("aetheryte", gd.aetheryte)?;
+            t.set("plateId", gd.plate_id)?;
+            t.set("borderId", gd.border_id)?;
+            t.set("timeLimit", gd.time_limit)?;
+            t.set("favorCount", gd.favor_count)?;
+            t.set("aimNum", gd.aim_num.to_vec())?;
+            t.set("mob", gd.mobs.to_vec())?;
             Ok(Value::Table(t))
         })?;
         globals.set("GetGuildleveGamedata", f)?;
+    }
+
+    // GetGuildleveOffers(aetheryteClassId) — the leve set a levemete
+    // offers for that camp: up to 8 battle leve ids (crate::leve::battle).
+    {
+        let cats = catalogs.clone();
+        let f = lua.create_function(move |_, aetheryte: u32| -> mlua::Result<Vec<u32>> {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default();
+            let offers = cats
+                .guildleves
+                .read()
+                .map(|m| crate::leve::battle::offers(&m, aetheryte, now))
+                .unwrap_or_default();
+            tracing::debug!(aetheryte, ?offers, "GetGuildleveOffers");
+            Ok(offers)
+        })?;
+        globals.set("GetGuildleveOffers", f)?;
     }
 
     // GetRecipeResolver() → LuaRecipeResolver | nil. Mirrors Meteor's

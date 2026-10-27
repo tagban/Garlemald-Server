@@ -12582,18 +12582,14 @@ async fn lua_player_add_guildleve_routes_regional_ids_to_accept() {
         r#"
         player:AddGuildleve(140001) -- battlecraft: routes to accept
         player:AddGuildleve(130450) -- fieldcraft upper bound: routes
-        player:AddGuildleve(50)     -- C# tradecraft id: no-op stub
+        player:AddGuildleve(10821)  -- battle leve: taken into a guildleve slot
         "#,
     )
     .exec()
     .unwrap();
 
     let cmds = CommandQueue::drain(&queue);
-    assert_eq!(
-        cmds.len(),
-        2,
-        "only the two regional-range ids emit a command; the tradecraft id is a stub"
-    );
+    assert_eq!(cmds.len(), 3);
     match &cmds[0] {
         LuaCommandKind::AcceptRegionalLeve {
             player_id,
@@ -12611,6 +12607,16 @@ async fn lua_player_add_guildleve_routes_regional_ids_to_accept() {
             assert_eq!(*leve_id, 130_450, "fieldcraft upper bound still routes");
         }
         other => panic!("expected AcceptRegionalLeve, got {other:?}"),
+    }
+    match &cmds[2] {
+        LuaCommandKind::AddGuildleve {
+            player_id,
+            guildleve_id,
+        } => {
+            assert_eq!(*player_id, 909);
+            assert_eq!(*guildleve_id, 10821);
+        }
+        other => panic!("expected AddGuildleve, got {other:?}"),
     }
 
     let _ = std::fs::remove_file(&probe);

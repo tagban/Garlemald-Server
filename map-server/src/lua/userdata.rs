@@ -1485,10 +1485,44 @@ impl UserData for LuaPlayer {
                 );
                 return Ok(());
             }
-            tracing::debug!(
-                player = this.snapshot.actor_id,
-                gl_id,
-                "AddGuildleve captured (non-regional id — C# guildleve subsystem not wired)",
+            // a battle leve (gamedata_guildleves): crate::leve::battle
+            push(
+                &this.queue,
+                LuaCommand::AddGuildleve {
+                    player_id: this.snapshot.actor_id,
+                    guildleve_id: gl_id,
+                },
+            );
+            Ok(())
+        });
+        // Battle leves at the camp aetheryte (AetheryteParent.lua):
+        // start one, ask which one is running, give it up.
+        methods.add_method(
+            "StartGuildleve",
+            |_, this, (gl_id, difficulty): (u32, Option<u8>)| {
+                push(
+                    &this.queue,
+                    LuaCommand::StartBattleleve {
+                        player_id: this.snapshot.actor_id,
+                        guildleve_id: gl_id,
+                        difficulty: difficulty.unwrap_or(1),
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method("GetGuildleve", |_, this, _: ()| {
+            Ok(match crate::leve::battle::current(this.snapshot.actor_id) {
+                Some((id, difficulty)) => (Some(id), Some(difficulty)),
+                None => (None, None),
+            })
+        });
+        methods.add_method("AbandonGuildleve", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::AbandonBattleleve {
+                    player_id: this.snapshot.actor_id,
+                },
             );
             Ok(())
         });

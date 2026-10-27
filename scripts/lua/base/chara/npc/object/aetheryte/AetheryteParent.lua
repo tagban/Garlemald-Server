@@ -81,7 +81,7 @@ function onEventStarted(player, aetheryte, triggerName)
 		end
 	end
 
-	if (player:GetGuildleveDirector() ~= nil) then
+	if (player:GetGuildleve() ~= nil) then
 		doGuildleveMenu(player, aetheryte);
 	else
 		doNormalMenu(player, aetheryte);
@@ -93,12 +93,12 @@ end
 
 function doGuildleveMenu(player, aetheryte)
 
-	local currentGLDirector = player:GetGuildleveDirector();	
-	local choice = callClientFunction(player, "eventGLPlay", currentGLDirector.guildleveId, true, 1, 500, 400, guardian, 8, currentGLDirector.selectedDifficulty, 2);
+	local glId, difficulty = player:GetGuildleve();
+	local choice = callClientFunction(player, "eventGLPlay", glId, true, 1, 500, 400, guardian, 8, difficulty, 2);
 
 	--Abandon
 	if (choice == 6) then
-		currentGLDirector:AbandonGuildleve();
+		player:AbandonGuildleve();
 	end
 	
 end
@@ -178,8 +178,12 @@ function doLevequestInit(player, aetheryte)
 			player:SendMessage(0x20, "", "An error has occured... aborting.");
 			return;
 		end
+		if (guildleveData.aetheryte ~= aetheryte:GetActorClassId()) then
+			player:SendMessage(0x20, "", "This levequest starts at a different camp.");
+			goto SELECT_LOOP;
+		end
 		
-		unknown, begin = callClientFunction(player, "eventGLSelectDetail", glId, 0xa, 0xf4241, 1000, 0, 0, 0, true, false);
+		unknown, begin = callClientFunction(player, "eventGLSelectDetail", glId, 0xa, 0xf4241, guildleveData.rewardGil, 0, 0, 0, true, false);
 		if (begin) then
 			::SELECT_DIFFICULTY::
 			player:SendGameMessage(worldMaster, 50014, 0x20); --"Please select a difficulty level. This may be lowered later."
@@ -187,13 +191,9 @@ function doLevequestInit(player, aetheryte)
 			if (difficulty == nil) then goto SELECT_DETAIL; end			
 			confirmResult = callClientFunction(player, "eventGLStart", glId, difficulty, 1, guildleveData.favorCount, 20, 0, 0, 0, 0);
 			if (confirmResult == nil) then goto SELECT_DIFFICULTY; else
-							
-				player:SendGameMessage(worldMaster, 50036, 0x20, glId, player);
-				player:PlayAnimation(getGLStartAnimationFromSheet(guildleveData.borderId, guildleveData.plateId, true));				
-				director = player:GetZone():CreateGuildleveDirector(glId, difficulty, player);
-				player:AddDirector(director);
-				director:StartDirector(true, glId);
-				
+				-- the server spawns the leve director, the start texts and
+				-- the targets (map-server/src/leve/battle.rs)
+				player:StartGuildleve(glId, difficulty);
 			end
 		else
 			goto SELECT_LOOP;

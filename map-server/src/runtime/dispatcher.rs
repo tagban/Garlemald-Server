@@ -2008,6 +2008,16 @@ pub(crate) async fn die_if_defender_fell(
     if !is_bnpc {
         return;
     }
+    // A battle leve's target counts whoever landed the blow.
+    crate::leve::battle::on_death(
+        defender_actor_id,
+        registry,
+        world,
+        db.map(|d| d.as_ref()),
+        lua,
+        crate::runtime::clock::server_now_ms(),
+    )
+    .await;
     // #28 S4.1 — the content-area kill gate fires from `apply_die`'s tail
     // (which this function just called with the same lua/db pair), so it
     // already covered this death — including ally killing blows, whose
