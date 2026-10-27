@@ -130,7 +130,7 @@ aetheryteTeleportPositions = {
     [1280018] = {131, -1694.5, -19.9, -1534.}, -- Mistbeard Cove
     [1280020] = {132, 1343.5, -54.38, -870.84},  -- CAP
 	--Thanalan
-	[1280031] = {175, -235, 185, -3.9}, -- CAP
+	[1280031] = {175, -235, 186, -3.9}, -- CAP (the plaza floor is y 186)
     [1280032] = {170, 33, 200.1, -482}, -- Camp Black Brush
 	[1280033] = {171, 1250.9, 264, -544.2}, -- CAP
     [1280034] = {172, -1313.91, 56.023, -145.597}, -- Camp Horizon  https://www.youtube.com/watch?v=mQAK4QVnx3c
