@@ -475,6 +475,15 @@ impl CharaState {
     }
 }
 
+/// Stat bonuses from food or medicine, applied by the stat recalc while
+/// `status_id` is on the character.
+#[derive(Debug, Clone)]
+pub struct FoodBuff {
+    pub status_id: u32,
+    /// (modifier id, percent, cap; 0 = no cap)
+    pub bonuses: Vec<(u32, i32, i32)>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Character {
     pub base: BaseActor,
@@ -504,6 +513,13 @@ pub struct Character {
     /// would just double the write-path bookkeeping. Only Players ever
     /// populate it; NPCs/BattleNpcs carry the default empty journal.
     pub quest_journal: crate::actor::quest::QuestJournal,
+    /// Quests this player can take, by the class id of the NPC who offers
+    /// them: `(quest id, the giver's marker)`. Players only; see
+    /// `processor/quest_offers.rs`.
+    pub quest_offers: std::collections::HashMap<u32, (u32, crate::actor::quest::QuestEnpc)>,
+    /// The food or medicine buff riding the Well Fed status
+    /// (`processor/items.rs`); the stat recalc applies it while it lasts.
+    pub food: Option<FoodBuff>,
 }
 
 impl Character {
@@ -521,6 +537,8 @@ impl Character {
             battle_save: crate::battle::BattleSave::default(),
             event_session: crate::event::EventSession::default(),
             quest_journal: crate::actor::quest::QuestJournal::default(),
+            quest_offers: Default::default(),
+            food: None,
         }
     }
 }

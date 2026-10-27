@@ -43,6 +43,19 @@ use crate::gamedata::{
     StatusEffectDef, StatusEffectEntry, TIMER_COLUMNS, class_column,
 };
 
+/// A consumable's use data, from [`Database::usable_item`].
+#[derive(Debug, Clone, Default)]
+pub struct UsableItem {
+    /// `Normal/PotionItem`, `Normal/FoodItem`, `Normal/EnchantMedicineItem`, ...
+    pub category: String,
+    pub usable: bool,
+    pub recast_s: f32,
+    pub recast_group: i32,
+    pub duration_s: f32,
+    /// (paramBonus type, value, cap; 0 = no cap)
+    pub effects: Vec<(u32, i32, i32)>,
+}
+
 /// One row of `server_zones` — the on-disk record for a zone template.
 #[derive(Debug, Clone, Default)]
 pub struct ZoneRow {
@@ -2922,6 +2935,180 @@ impl Database {
             })
             .await?;
         Ok(())
+    }
+
+    /// What using `catalog_id` does: the gamedata row's category, recast and
+    /// duration, plus its bonuses. Consumables keep them in
+    /// `gamedata_items_equipment`: slot 3 is food's EXP bonus, slots 5-7 the
+    /// effects (`1015xxx` a percent stat buff, `1016xxx` a percent HP/MP
+    /// restore) and slots 8-10 each effect's cap (0 = none).
+    pub async fn usable_item(&self, catalog_id: u32) -> Result<Option<UsableItem>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT i.category, i.isUseable, i.recastTime, i.recastGroup, i.effectDuration,
+                            e.paramBonusType3, e.paramBonusValue3,
+                            e.paramBonusType5, e.paramBonusValue5,
+                            e.paramBonusType6, e.paramBonusValue6,
+                            e.paramBonusType7, e.paramBonusValue7,
+                            e.paramBonusValue8, e.paramBonusValue9, e.paramBonusValue10
+                     FROM gamedata_items i
+                     LEFT JOIN gamedata_items_equipment e ON e.catalogID = i.catalogID
+                     WHERE i.catalogID = ?1",
+                    [catalog_id],
+                    |r| {
+                        let int = |k: usize| -> rusqlite::Result<i32> {
+                            Ok(r.get::<_, Option<i32>>(k)?.unwrap_or(-1))
+                        };
+                        let mut effects = Vec::new();
+                        for k in 0..3 {
+                            let (kind, value, cap) =
+                                (int(7 + 2 * k)?, int(8 + 2 * k)?, int(13 + k)?);
+                            if kind > 0 && value != 0 {
+                                effects.push((kind as u32, value, cap.max(0)));
+                            }
+                        }
+                        let (exp_kind, exp_value) = (int(5)?, int(6)?);
+                        if exp_kind > 0 && exp_value != 0 {
+                            effects.push((exp_kind as u32, exp_value, 0));
+                        }
+                        Ok(UsableItem {
+                            category: r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                            usable: r.get::<_, Option<i32>>(1)?.unwrap_or(0) != 0,
+                            recast_s: r.get::<_, Option<f64>>(2)?.unwrap_or(0.0) as f32,
+                            recast_group: r.get::<_, Option<i32>>(3)?.unwrap_or(0),
+                            duration_s: r.get::<_, Option<f64>>(4)?.unwrap_or(0.0) as f32,
+                            effects,
+                        })
+                    },
+                )
+                .optional()
+            })
+            .await
+    }
+
+    /// GM `!spawn`: temporary pool / group / spawn rows for `class_id` at
+    /// `positions`, so the normal battle-NPC spawn path can materialise it.
+    /// Returns (bnpc ids, group id, pool id if one was created here); remove
+    /// them again with [`Database::gm_spawn_delete`] once spawned.
+    pub async fn gm_spawn_insert(
+        &self,
+        class_id: u32,
+        name: String,
+        genus_id: u32,
+        zone_id: u32,
+        level: u32,
+        positions: Vec<(f32, f32, f32, f32)>,
+    ) -> Result<(Vec<u32>, u32, Option<u32>)> {
+        self.conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                let existing: Option<u32> = tx
+                    .query_row(
+                        "SELECT poolId FROM server_battlenpc_pools WHERE actorClassId = ?1 LIMIT 1",
+                        [class_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let (pool_id, created) = match existing {
+                    Some(p) => (p, None),
+                    None => {
+                        let p: u32 = tx.query_row(
+                            "SELECT COALESCE(MAX(poolId), 0) + 1 FROM server_battlenpc_pools",
+                            [],
+                            |r| r.get(0),
+                        )?;
+                        tx.execute(
+                            "INSERT INTO server_battlenpc_pools (poolId, actorClassId, name, genusId, combatSkill, combatDelay)
+                             VALUES (?1, ?2, ?3, ?4, 1, 4200)",
+                            rusqlite::params![p, class_id, name, genus_id],
+                        )?;
+                        (p, Some(p))
+                    }
+                };
+                let group_id: u32 = tx.query_row(
+                    "SELECT COALESCE(MAX(groupId), 0) + 1 FROM server_battlenpc_groups",
+                    [],
+                    |r| r.get(0),
+                )?;
+                tx.execute(
+                    "INSERT INTO server_battlenpc_groups (groupId, poolId, scriptName, minLevel, maxLevel, respawnTime, zoneId)
+                     VALUES (?1, ?2, 'gm_spawn', ?3, ?3, 0, ?4)",
+                    rusqlite::params![group_id, pool_id, level, zone_id],
+                )?;
+                let mut ids = Vec::new();
+                for (x, y, z, rot) in positions {
+                    tx.execute(
+                        "INSERT INTO server_battlenpc_spawn_locations (groupId, positionX, positionY, positionZ, rotation)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![group_id, x, y, z, rot],
+                    )?;
+                    ids.push(tx.last_insert_rowid() as u32);
+                }
+                tx.commit()?;
+                Ok((ids, group_id, created))
+            })
+            .await
+    }
+
+    /// Remove the rows [`Database::gm_spawn_insert`] made.
+    pub async fn gm_spawn_delete(
+        &self,
+        bnpc_ids: Vec<u32>,
+        group_id: u32,
+        pool_id: Option<u32>,
+    ) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                for id in bnpc_ids {
+                    c.execute(
+                        "DELETE FROM server_battlenpc_spawn_locations WHERE bnpcId = ?1",
+                        [id],
+                    )?;
+                }
+                c.execute(
+                    "DELETE FROM server_battlenpc_groups WHERE groupId = ?1",
+                    [group_id],
+                )?;
+                if let Some(p) = pool_id {
+                    c.execute("DELETE FROM server_battlenpc_pools WHERE poolId = ?1", [p])?;
+                }
+                Ok(())
+            })
+            .await
+    }
+
+    /// The genus other pools of `class_id`'s monster family use. Monster
+    /// class ids read 2 / kind / family (3 digits) / variant (2 digits), so
+    /// 2101407 and 2201406 are both wolves.
+    pub async fn genus_for_class_family(&self, class_id: u32) -> Result<Option<u32>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT genusId FROM server_battlenpc_pools
+                     WHERE (actorClassId / 100) % 1000 = (?1 / 100) % 1000
+                     GROUP BY genusId ORDER BY COUNT(*) DESC LIMIT 1",
+                    [class_id],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
+    }
+
+    /// The genus (monster family) a class path's folder names, e.g.
+    /// `/Chara/Npc/Monster/Wolf/WolfStandard` -> the "Wolf" genus.
+    pub async fn genus_for_family(&self, family: String) -> Result<Option<u32>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT genusId FROM server_battlenpc_genus WHERE lower(name) = lower(?1) LIMIT 1",
+                    [family],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
     }
 
     /// The item in gear slot `equip_slot` for `class_id` (undergarments are

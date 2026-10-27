@@ -14977,6 +14977,35 @@ async fn set_target_auto_attack_gated_on_active_mode() {
     }
 }
 
+/// A townsperson or quest giver (`Npc`) is never an auto-attack target,
+/// even with the weapon drawn: players could hit quest NPCs (Hihine took
+/// 58 and 99 damage in a live test).
+#[tokio::test]
+async fn set_target_auto_attack_ignores_townspeople() {
+    let scene = sheathe_scene().await;
+    let mut hihine = Character::new(3);
+    hihine.chara.hp = 100;
+    hihine.chara.max_hp = 100;
+    scene
+        .registry
+        .insert(ActorHandle::new(3, ActorKindTag::Npc, 100, 0, hihine))
+        .await;
+    let handle = scene.registry.get(1).await.expect("player handle");
+    {
+        let mut c = handle.character.write().await;
+        c.base.current_main_state = crate::actor::MAIN_STATE_ACTIVE;
+    }
+    scene.processor.apply_player_set_target(42, 3, true).await;
+    {
+        let c = handle.character.read().await;
+        assert!(
+            !c.ai_container.is_engaged(),
+            "an Npc must not be engaged by the basic attack",
+        );
+        assert_eq!(c.chara.current_target, 3, "the soft target still lands");
+    }
+}
+
 /// #46 — script-driven engagement bypasses the 0x00CD stance gate:
 /// `ActorEngage` (SEQ_005 tutorial wolves / escort allies via
 /// `apply_actor_engage`) must keep engaging a PASSIVE actor.
