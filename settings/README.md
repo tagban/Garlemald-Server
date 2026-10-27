@@ -92,8 +92,10 @@ camp = 0
 | `!addquest` `!completequest` `!delquest <quest id> [name]` | Quests |
 | `!addtitle <id>` `!addeffect <status id> [seconds]` `!addallaetherytes` | Titles, status effects, every aetheryte |
 | `!setmusic <id> [name]` / `!setweather <id>` | Music for someone / weather for your zone |
+| `!spawn <class id> [level] [count] [path=…] [genus=…]` / `!despawn` | Monsters around you for testing (up to 8, never respawn; `path=` tries a class path, `genus=` a family) / remove them |
+| `!kill` / `!kill all` | Defeat your target or the nearest monster / every monster within 20 yalms, as if you'd won the fight (EXP, quest and leve kills count) |
 
-The FFXI server's names work too: `!where`, `!ver`, `!raise`, `!kill`,
+The FFXI server's names work too: `!where`, `!ver`, `!raise`, `!kill <name>`,
 `!release`, `!promote`, `!homepoint`, `!giveitem`, `!givekeyitem`,
 `!fixspeed`, `!reloadglobal`.
 

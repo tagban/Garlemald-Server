@@ -78,6 +78,8 @@ dismissretainer = 3
 listretainers = 3
 setsleeping = 3
 dream = 3
+spawn = 3
+despawn = 3
 die = 3
 
 # administrators: GM levels, scripts and quest debugging

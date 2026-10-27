@@ -2924,6 +2924,130 @@ impl Database {
         Ok(())
     }
 
+    /// GM `!spawn`: temporary pool / group / spawn rows for `class_id` at
+    /// `positions`, so the normal battle-NPC spawn path can materialise it.
+    /// Returns (bnpc ids, group id, pool id if one was created here); remove
+    /// them again with [`Database::gm_spawn_delete`] once spawned.
+    pub async fn gm_spawn_insert(
+        &self,
+        class_id: u32,
+        name: String,
+        genus_id: u32,
+        zone_id: u32,
+        level: u32,
+        positions: Vec<(f32, f32, f32, f32)>,
+    ) -> Result<(Vec<u32>, u32, Option<u32>)> {
+        self.conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                let existing: Option<u32> = tx
+                    .query_row(
+                        "SELECT poolId FROM server_battlenpc_pools WHERE actorClassId = ?1 LIMIT 1",
+                        [class_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let (pool_id, created) = match existing {
+                    Some(p) => (p, None),
+                    None => {
+                        let p: u32 = tx.query_row(
+                            "SELECT COALESCE(MAX(poolId), 0) + 1 FROM server_battlenpc_pools",
+                            [],
+                            |r| r.get(0),
+                        )?;
+                        tx.execute(
+                            "INSERT INTO server_battlenpc_pools (poolId, actorClassId, name, genusId, combatSkill, combatDelay)
+                             VALUES (?1, ?2, ?3, ?4, 1, 4200)",
+                            rusqlite::params![p, class_id, name, genus_id],
+                        )?;
+                        (p, Some(p))
+                    }
+                };
+                let group_id: u32 = tx.query_row(
+                    "SELECT COALESCE(MAX(groupId), 0) + 1 FROM server_battlenpc_groups",
+                    [],
+                    |r| r.get(0),
+                )?;
+                tx.execute(
+                    "INSERT INTO server_battlenpc_groups (groupId, poolId, scriptName, minLevel, maxLevel, respawnTime, zoneId)
+                     VALUES (?1, ?2, 'gm_spawn', ?3, ?3, 0, ?4)",
+                    rusqlite::params![group_id, pool_id, level, zone_id],
+                )?;
+                let mut ids = Vec::new();
+                for (x, y, z, rot) in positions {
+                    tx.execute(
+                        "INSERT INTO server_battlenpc_spawn_locations (groupId, positionX, positionY, positionZ, rotation)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![group_id, x, y, z, rot],
+                    )?;
+                    ids.push(tx.last_insert_rowid() as u32);
+                }
+                tx.commit()?;
+                Ok((ids, group_id, created))
+            })
+            .await
+    }
+
+    /// Remove the rows [`Database::gm_spawn_insert`] made.
+    pub async fn gm_spawn_delete(
+        &self,
+        bnpc_ids: Vec<u32>,
+        group_id: u32,
+        pool_id: Option<u32>,
+    ) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                for id in bnpc_ids {
+                    c.execute(
+                        "DELETE FROM server_battlenpc_spawn_locations WHERE bnpcId = ?1",
+                        [id],
+                    )?;
+                }
+                c.execute(
+                    "DELETE FROM server_battlenpc_groups WHERE groupId = ?1",
+                    [group_id],
+                )?;
+                if let Some(p) = pool_id {
+                    c.execute("DELETE FROM server_battlenpc_pools WHERE poolId = ?1", [p])?;
+                }
+                Ok(())
+            })
+            .await
+    }
+
+    /// The genus other pools of `class_id`'s monster family use. Monster
+    /// class ids read 2 / kind / family (3 digits) / variant (2 digits), so
+    /// 2101407 and 2201406 are both wolves.
+    pub async fn genus_for_class_family(&self, class_id: u32) -> Result<Option<u32>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT genusId FROM server_battlenpc_pools
+                     WHERE (actorClassId / 100) % 1000 = (?1 / 100) % 1000
+                     GROUP BY genusId ORDER BY COUNT(*) DESC LIMIT 1",
+                    [class_id],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
+    }
+
+    /// The genus (monster family) a class path's folder names, e.g.
+    /// `/Chara/Npc/Monster/Wolf/WolfStandard` -> the "Wolf" genus.
+    pub async fn genus_for_family(&self, family: String) -> Result<Option<u32>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT genusId FROM server_battlenpc_genus WHERE lower(name) = lower(?1) LIMIT 1",
+                    [family],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
+    }
+
     /// The item in gear slot `equip_slot` for `class_id` (undergarments are
     /// stored under class 0): `(serverItemId, catalogId, quality)`.
     pub async fn equipped_item(

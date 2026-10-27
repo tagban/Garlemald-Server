@@ -58,6 +58,7 @@ use crate::social::{
 use crate::world_manager::WorldManager;
 
 mod equip;
+mod gm_spawn;
 mod quest_offers;
 
 /// Read a null-terminated ASCII string out of a fixed-size byte slice.
@@ -2663,6 +2664,21 @@ impl PacketProcessor {
         parent_zone_id: u32,
         expected_actor_id: u32,
     ) {
+        self.spawn_battle_npc(bnpc_id, parent_zone_id, expected_actor_id, None)
+            .await;
+    }
+
+    /// The battle-NPC spawn behind [`Self::apply_spawn_battle_npc_by_id`].
+    /// `gm` is set for a GM `!spawn`: the actor never respawns, and may use
+    /// a different class path than its gamedata row (`Some(path)`) to try
+    /// out a model's script.
+    async fn spawn_battle_npc(
+        &self,
+        bnpc_id: u32,
+        parent_zone_id: u32,
+        expected_actor_id: u32,
+        gm: Option<Option<String>>,
+    ) -> bool {
         // 1. Load the joined spawn DTO from the database.
         let spawn = match self.db.load_battle_npc_spawn(bnpc_id).await {
             Ok(Some(row)) => row,
@@ -2672,7 +2688,7 @@ impl PacketProcessor {
                     parent_zone = parent_zone_id,
                     "SpawnBattleNpcById: bnpc_id not in server_battlenpc_spawn_locations",
                 );
-                return;
+                return false;
             }
             Err(e) => {
                 tracing::warn!(
@@ -2680,14 +2696,14 @@ impl PacketProcessor {
                     error = %e,
                     "SpawnBattleNpcById: db query failed",
                 );
-                return;
+                return false;
             }
         };
 
         // 2. Resolve the ActorClass row keyed by spawn.actor_class_id.
         //    The class carries class_path / display_name_id / event
         //    conditions — required for AddActor + ActorInstantiate.
-        let actor_class = match self.db.load_actor_class(spawn.actor_class_id).await {
+        let mut actor_class = match self.db.load_actor_class(spawn.actor_class_id).await {
             Ok(Some(c)) => c,
             Ok(None) => {
                 tracing::warn!(
@@ -2695,7 +2711,7 @@ impl PacketProcessor {
                     actor_class_id = spawn.actor_class_id,
                     "SpawnBattleNpcById: actor_class not in gamedata_actor_class",
                 );
-                return;
+                return false;
             }
             Err(e) => {
                 tracing::warn!(
@@ -2703,9 +2719,13 @@ impl PacketProcessor {
                     error = %e,
                     "SpawnBattleNpcById: actor_class load failed",
                 );
-                return;
+                return false;
             }
         };
+
+        if let Some(Some(path)) = &gm {
+            actor_class.class_path = path.clone();
+        }
 
         // 3. Compute actor_number from expected_actor_id (must round-trip
         //    through the same `(4 << 28) | (zone << 19) | actor_number`
@@ -2774,7 +2794,7 @@ impl PacketProcessor {
             );
             // Bail rather than spawn at the wrong id; the script's
             // subsequent calls would target a phantom actor.
-            return;
+            return false;
         }
 
         // 4b. Phase C1 — apply combat metadata from the joined DTO
@@ -2820,7 +2840,7 @@ impl PacketProcessor {
                 parent_zone = parent_zone_id,
                 "SpawnBattleNpcById: parent zone not loaded",
             );
-            return;
+            return false;
         };
         {
             let mut zone = zone_arc.write().await;
@@ -2856,7 +2876,7 @@ impl PacketProcessor {
         // anyway). Detection: the spawn fires from a content script's
         // onCreate, which runs after `active_content_script` is set on
         // the owning session for this parent zone.
-        let content_spawn = {
+        let content_spawn = gm.is_some() || {
             let mut found = false;
             for mut snap in self.world.all_sessions().await {
                 if let Some(active) = snap.active_content_script.as_mut()
@@ -2933,6 +2953,12 @@ impl PacketProcessor {
         //    post-warp. Acceptable for the kick-test; the cinematic
         //    body fires from `delegateEvent processTtrBtl001` which
         //    is purely client-side rendering.
+        // GM spawns reach nearby players through the normal in-range
+        // streaming (send_instance_update); a second AddActor here would
+        // duplicate the actor and crash the client.
+        if gm.is_some() {
+            return true;
+        }
         let _ = zone_arc; // keep handle so registry insert works
         let _ = spawn.script_name.clone(); // suppress unused warning
         // crate::runtime::dispatcher::spawn_bundle_fanout(
@@ -2953,6 +2979,7 @@ impl PacketProcessor {
             "SpawnBattleNpcById applied — wire fan-out SKIPPED to keep \
              content-area NPCs out of the player's pre-warp view",
         );
+        true
     }
 
     /// Port of C# `Area::SpawnActor(classId, uniqueId, x, y, z, rot)`
@@ -10219,7 +10246,12 @@ impl PacketProcessor {
             // what the player may run: their account's GM level against
             // settings/commands.toml (crate::command_permissions)
             let level = self.db.gm_level_of_character(session_id).await.unwrap_or(0);
-            let feedback = if let Some(cmd) = &self.cmd {
+            let feedback = if let Some(r) = self.gm_spawn_command(&handle, &line, level).await {
+                Some(match r {
+                    Ok(m) => (ChatKind::System, m),
+                    Err(m) => (ChatKind::SystemError, m),
+                })
+            } else if let Some(cmd) = &self.cmd {
                 match cmd.run_as_player(&line, &invoker, level).await {
                     Ok(response) if !response.is_empty() => {
                         tracing::info!(%response, "command result");
