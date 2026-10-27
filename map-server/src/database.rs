@@ -416,6 +416,64 @@ impl Database {
         Ok(row)
     }
 
+    /// Where an aetheryte (a leve camp) stands: zone and position of its
+    /// `server_spawn_locations` row.
+    pub async fn aetheryte_spot(
+        &self,
+        actor_class_id: u32,
+    ) -> Result<Option<(u32, f32, f32, f32)>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    r"SELECT zoneId, positionX, positionY, positionZ
+                      FROM server_spawn_locations WHERE actorClassId = ?1 AND zoneId != 0
+                      LIMIT 1",
+                    [actor_class_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()
+            })
+            .await
+            .context("leve data query")
+    }
+
+    /// Every monster spawn point in a zone (positions on the ground).
+    pub async fn battlenpc_spawn_points(&self, zone_id: u32) -> Result<Vec<(f32, f32, f32)>> {
+        self.conn
+            .call_db(move |c| {
+                let mut stmt = c.prepare(
+                    r"SELECT s.positionX, s.positionY, s.positionZ
+                      FROM server_battlenpc_spawn_locations s
+                      JOIN server_battlenpc_groups g ON g.groupId = s.groupId
+                      WHERE g.zoneId = ?1",
+                )?;
+                let rows = stmt
+                    .query_map([zone_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            })
+            .await
+            .context("leve data query")
+    }
+
+    /// The monster class that wears a display name: its id is usually the
+    /// name id minus 1,000,000, and it must have a monster class path.
+    pub async fn monster_class_for_name(&self, display_name_id: u32) -> Result<Option<u32>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    r"SELECT id FROM gamedata_actor_class
+                      WHERE displayNameId = ?1 AND classPath LIKE '/Chara/Npc/Monster/%'
+                      ORDER BY id != ?1 - 1000000, id LIMIT 1",
+                    [display_name_id],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
+            .context("leve data query")
+    }
+
     pub async fn load_actor_classes(&self) -> Result<HashMap<u32, crate::npc::ActorClass>> {
         tracing::debug!("db: load_actor_classes");
         let rows = self
@@ -1012,7 +1070,10 @@ impl Database {
             .conn
             .call_db(|c| {
                 let mut stmt = c.prepare(
-                    r"SELECT id, zoneId, name, difficulty, leveType, rewardExp, rewardGil
+                    r"SELECT id, zoneId, name, difficulty, leveType, rewardExp, rewardGil,
+                             classType, location, level, aetheryte, plateId, borderId,
+                             timeLimit, favorCount, aimNum1, aimNum2, aimNum3, aimNum4,
+                             mob1, mob2, mob3, mob4
                       FROM gamedata_guildleves",
                 )?;
                 let rows: Vec<(u32, GuildleveGamedata)> = stmt
@@ -1028,6 +1089,20 @@ impl Database {
                                 leve_type: r.get::<_, u8>(4).unwrap_or_default(),
                                 reward_exp: r.get::<_, u32>(5).unwrap_or_default(),
                                 reward_gil: r.get::<_, u32>(6).unwrap_or_default(),
+                                class_type: r.get::<_, u8>(7).unwrap_or_default(),
+                                location: r.get::<_, u8>(8).unwrap_or_default(),
+                                level: r.get::<_, u16>(9).unwrap_or_default(),
+                                aetheryte: r.get::<_, u32>(10).unwrap_or_default(),
+                                plate_id: r.get::<_, u32>(11).unwrap_or_default(),
+                                border_id: r.get::<_, u32>(12).unwrap_or_default(),
+                                time_limit: r.get::<_, u32>(13).unwrap_or_default(),
+                                favor_count: r.get::<_, u32>(14).unwrap_or_default(),
+                                aim_num: std::array::from_fn(|i| {
+                                    r.get::<_, i8>(15 + i).unwrap_or_default()
+                                }),
+                                mobs: std::array::from_fn(|i| {
+                                    r.get::<_, u32>(19 + i).unwrap_or_default()
+                                }),
                             },
                         ))
                     })?

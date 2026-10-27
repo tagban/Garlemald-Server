@@ -297,6 +297,19 @@ pub async fn run() -> Result<()> {
             );
         }
     }
+    match db.get_guildleve_gamedata().await {
+        Ok(data) => {
+            let count = data.len();
+            lua.catalogs().install_guildleves(data);
+            tracing::info!(count, "gamedata_guildleves catalog loaded");
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "gamedata_guildleves load failed: battle leves unavailable",
+            );
+        }
+    }
     match db.load_passive_guildleve_data().await {
         Ok(data) => {
             let count = data.len();

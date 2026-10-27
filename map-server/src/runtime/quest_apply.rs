@@ -509,6 +509,42 @@ pub async fn apply_runtime_lua_command(
                 .await;
             true
         }
+        LC::AddGuildleve {
+            player_id,
+            guildleve_id,
+        } => {
+            crate::leve::battle::add(player_id, guildleve_id, registry, world, db).await;
+            true
+        }
+        LC::StartBattleleve {
+            player_id,
+            guildleve_id,
+            difficulty,
+        } => {
+            crate::leve::battle::start(
+                player_id,
+                guildleve_id,
+                difficulty,
+                registry,
+                world,
+                db,
+                lua,
+                crate::runtime::clock::server_now_ms(),
+            )
+            .await;
+            true
+        }
+        LC::AbandonBattleleve { player_id } => {
+            crate::leve::battle::abandon(
+                player_id,
+                registry,
+                world,
+                db,
+                crate::runtime::clock::server_now_ms(),
+            )
+            .await;
+            true
+        }
         LC::AcceptRegionalLeve {
             player_id,
             leve_id,

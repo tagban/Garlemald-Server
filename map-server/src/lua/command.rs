@@ -404,6 +404,22 @@ pub enum LuaCommand {
         leve_id: u32,
         difficulty: u8,
     },
+    /// `player:AddGuildleve(id)` for a battle leve: take it into a free
+    /// regional leve slot (`crate::leve::battle::add`).
+    AddGuildleve {
+        player_id: u32,
+        guildleve_id: u32,
+    },
+    /// `player:StartGuildleve(id, difficulty)` at a camp aetheryte.
+    StartBattleleve {
+        player_id: u32,
+        guildleve_id: u32,
+        difficulty: u8,
+    },
+    /// `player:AbandonGuildleve()` — give up the running battle leve.
+    AbandonBattleleve {
+        player_id: u32,
+    },
     /// `player:BuyFromRetainer(retainerId, serverItemId)` — drain
     /// trigger for a bazaar purchase. Transactional: debits buyer
     /// gil, credits retainer owner, moves the item stack into the

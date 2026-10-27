@@ -81,12 +81,30 @@ fn family_genus(class_id: u32) -> u32 {
     }
 }
 
-fn next_number() -> u32 {
+pub(crate) fn next_number() -> u32 {
     let n = NEXT_NUMBER.fetch_add(1, Ordering::Relaxed);
     if n >= LAST_NUMBER {
         NEXT_NUMBER.store(FIRST_NUMBER, Ordering::Relaxed);
     }
     FIRST_NUMBER + (n - FIRST_NUMBER) % (LAST_NUMBER - FIRST_NUMBER)
+}
+
+/// The battle genus (server_battlenpc_genus) for a monster class: from its
+/// class path's family folder, then other spawns of the same family, then
+/// [`family_genus`].
+pub(crate) async fn genus_for(
+    db: &crate::database::Database,
+    class_id: u32,
+    class_path: &str,
+) -> u32 {
+    let family = class_path.split('/').nth(4).unwrap_or("").to_string();
+    if let Some(g) = db.genus_for_family(family).await.ok().flatten() {
+        return g;
+    }
+    if let Some(g) = db.genus_for_class_family(class_id).await.ok().flatten() {
+        return g;
+    }
+    family_genus(class_id)
 }
 
 const KILL_RANGE: f32 = 20.0;
@@ -194,22 +212,9 @@ impl PacketProcessor {
                 "class {class_id} has no class path; give one with path=/Chara/Npc/Monster/<Family>/<Script>"
             )));
         }
-        let family = class_path.split('/').nth(4).unwrap_or("").to_string();
         let genus = match genus {
             Some(g) => g,
-            None => match self.db.genus_for_family(family).await.ok().flatten() {
-                Some(g) => g,
-                None => match self
-                    .db
-                    .genus_for_class_family(class_id)
-                    .await
-                    .ok()
-                    .flatten()
-                {
-                    Some(g) => g,
-                    None => family_genus(class_id),
-                },
-            },
+            None => genus_for(&self.db, class_id, &class_path).await,
         };
 
         // a ring around the GM, 3 yalms out, facing them

@@ -115,6 +115,27 @@ pub fn build_director_spawn_subpackets(
     class_name: &str,
     zone_name: &str,
 ) -> Vec<common::subpacket::SubPacket> {
+    build_director_spawn_subpackets_with(
+        actor_id,
+        zone_actor_id,
+        class_path,
+        class_name,
+        zone_name,
+        &[],
+    )
+}
+
+/// [`build_director_spawn_subpackets`] with the values the director
+/// script's `init` returns after its class path (Meteor appends them to
+/// the ActorInstantiate params), e.g. a guildleve director's leve id.
+pub fn build_director_spawn_subpackets_with(
+    actor_id: u32,
+    zone_actor_id: u32,
+    class_path: &str,
+    class_name: &str,
+    zone_name: &str,
+    init_params: &[common::luaparam::LuaParam],
+) -> Vec<common::subpacket::SubPacket> {
     // Strip the path portion to the leaf class name. Mirror of pmeteor
     // `Director.cs`:
     //   className = classPath.Substring(classPath.LastIndexOf("/") + 1)
@@ -141,7 +162,7 @@ pub fn build_director_spawn_subpackets(
         class_lower.truncate(max_class_len);
     }
     let director_actor_name = format!("{class_lower}_{zone_short}_0@{zone_actor_id:03X}00");
-    let director_bind_params = vec![
+    let mut director_bind_params = vec![
         common::luaparam::LuaParam::String(class_path.to_string()),
         common::luaparam::LuaParam::False,
         common::luaparam::LuaParam::False,
@@ -149,6 +170,7 @@ pub fn build_director_spawn_subpackets(
         common::luaparam::LuaParam::False,
         common::luaparam::LuaParam::False,
     ];
+    director_bind_params.extend_from_slice(init_params);
     vec![
         tx::actor::build_add_actor(actor_id, 0),
         // C# `Director` ctor registers three notice-event conditions:
