@@ -815,12 +815,14 @@ async fn owner_claimed_by_current_quest(
     owner_class_id: u32,
 ) -> bool {
     let c = player_handle.character.read().await;
-    c.quest_journal.slots.iter().flatten().any(|q| {
-        q.state
-            .current
-            .values()
-            .any(|e| e.actor_class_id == owner_class_id)
-    })
+    // a quest on offer at this NPC drives the talk the same way
+    c.quest_offers.contains_key(&owner_class_id)
+        || c.quest_journal.slots.iter().flatten().any(|q| {
+            q.state
+                .current
+                .values()
+                .any(|e| e.actor_class_id == owner_class_id)
+        })
 }
 
 /// Director-flavoured `onEventStarted` dispatch.
@@ -1396,7 +1398,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("garlemald-event-dispatch-{nanos}-{seq}"));
+        let dir = common::test_tmp::dir().join(format!("garlemald-event-dispatch-{nanos}-{seq}"));
         std::fs::create_dir_all(dir.join("quests/man")).unwrap();
         dir
     }
@@ -1412,7 +1414,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("garlemald-event-dispatch-{nanos}-{seq}.db"))
+        common::test_tmp::dir().join(format!("garlemald-event-dispatch-{nanos}-{seq}.db"))
     }
 
     #[tokio::test]

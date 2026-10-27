@@ -41,6 +41,7 @@ pub mod server_list;
 pub mod settings;
 pub mod smoke;
 pub mod subpacket;
+pub mod test_tmp;
 pub mod utils;
 
 pub use blowfish::Blowfish;

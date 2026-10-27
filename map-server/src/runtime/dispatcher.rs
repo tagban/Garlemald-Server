@@ -63,6 +63,12 @@ impl battle_utils::Rng for ThreadRng {
 // Status events
 // ---------------------------------------------------------------------------
 
+/// pmeteor `HitEffect.StatusEffectType`: marks a CommandResult's effect
+/// field as a status effect id.
+const STATUS_EFFECT_HIT: u32 = 1 << 29;
+/// "You are <status>." — status gain text with no command behind it.
+const COMMANDLESS_GAIN_TEXT_ID: u16 = 30330;
+
 pub async fn dispatch_status_event(
     event: &StatusEvent,
     registry: &ActorRegistry,
@@ -99,9 +105,15 @@ pub async fn dispatch_status_event(
             slot_index,
             status_id,
         } => {
-            // Emit a SetActorStatusPacket to every client around the owner.
-            let sub = tx::build_set_actor_status(*owner_actor_id, *slot_index, *status_id);
-            broadcast_to_neighbours(world, registry, *owner_actor_id, sub.to_bytes()).await;
+            // Emit a SetActorStatusPacket to the owner and every client
+            // around them (pmeteor `BroadcastPacketsAroundActor`). The owner
+            // needs it too: the statusShownTime write below lands in their
+            // own status row, and a countdown on an empty slot crashes the
+            // client looking up status 0.
+            let bytes =
+                tx::build_set_actor_status(*owner_actor_id, *slot_index, *status_id).to_bytes();
+            send_to_self_if_player(registry, world, *owner_actor_id, bytes.clone()).await;
+            broadcast_to_neighbours(world, registry, *owner_actor_id, bytes).await;
         }
         StatusEvent::PacketSetStatusTime {
             owner_actor_id,
@@ -178,24 +190,35 @@ pub async fn dispatch_status_event(
             status_effect_id,
             play_gain_animation,
         } => {
-            // "You gain/lose the effect of X." pmeteor packs this into a
-            // CommandResult (owner.Id, textId, effectId | HitEffect flag) on
-            // the battle-action container; we render the same text sheet via
-            // the game-message builder with the effect id as a LuaParam. The
-            // header source must be the always-present WorldMaster static
-            // actor (the client dispatches game messages by header source —
-            // routing through the player is the #28 crash path), and the text
-            // owner is the WorldMaster system sheet.
-            let params = [common::luaparam::LuaParam::UInt32(*status_effect_id)];
-            let sub = tx::build_game_message_actor1_with_params(
-                tx::WORLD_MASTER_ACTOR_ID,
+            // "You gain/lose the effect of X." The text reads the status from
+            // a CommandResult's effect field (`[@SHEET(xtx/status,$E8(11),3)]`),
+            // so it has to ride a 0x0139 CommandResultX01 with the effect id
+            // flagged as a status (retail invigorate: text 30328, effect
+            // 0x20036776). As a plain game message with the id as a LuaParam
+            // the client finds no effect field and crashes.
+            //
+            // There's no command here, so the default gain text 30328 ("Your
+            // <command> grants you the effect of X.") becomes 30330 ("You are
+            // X."), the commandless one.
+            let text_id = if *text_id == crate::status::DEFAULT_GAIN_TEXT_ID {
+                COMMANDLESS_GAIN_TEXT_ID
+            } else {
+                *text_id
+            };
+            let result = crate::packets::send::actor_battle::CommandResult {
+                target_id: *owner_actor_id,
+                worldmaster_text_id: text_id,
+                hit_effect: STATUS_EFFECT_HIT | *status_effect_id,
+                hit_num: 1,
+                ..Default::default()
+            };
+            let bytes = crate::packets::send::actor_battle::build_command_result_x01(
                 *owner_actor_id,
-                tx::WORLD_MASTER_ACTOR_ID,
-                *text_id,
-                tx::MESSAGE_TYPE_SYSTEM,
-                &params,
-            );
-            let bytes = sub.to_bytes();
+                0,
+                0,
+                &result,
+            )
+            .to_bytes();
             // The owner always sees the log line; neighbours only receive the
             // packet when the gain/lose animation should splash on nearby
             // clients (pmeteor's `playEffect` / `HitEffect.StatusEffectType`).
@@ -1650,7 +1673,7 @@ pub(crate) async fn broadcast_to_neighbours(
 // at full HP / empty TP returns `false` so idle-at-rest actors produce
 // zero wire traffic from the regen tick.
 
-async fn apply_hp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> bool {
+pub(crate) async fn apply_hp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> bool {
     let Some(handle) = registry.get(actor_id).await else {
         return false;
     };
@@ -1660,7 +1683,7 @@ async fn apply_hp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> 
     c.chara.hp != before
 }
 
-async fn apply_mp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> bool {
+pub(crate) async fn apply_mp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> bool {
     let Some(handle) = registry.get(actor_id).await else {
         return false;
     };
@@ -1670,7 +1693,7 @@ async fn apply_mp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> 
     c.chara.mp != before
 }
 
-async fn apply_tp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> bool {
+pub(crate) async fn apply_tp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> bool {
     let Some(handle) = registry.get(actor_id).await else {
         return false;
     };
@@ -1685,7 +1708,11 @@ async fn apply_tp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> 
 /// pool broadcast fired. Resolve the owner's zone and ride the same
 /// `charaWork/stateAtQuicklyForAll` bundle the battle resolve fns use
 /// (pmeteor `Character.PostUpdate`'s HpTpMp update flag).
-async fn sync_pools_after_tick(registry: &ActorRegistry, world: &WorldManager, actor_id: u32) {
+pub(crate) async fn sync_pools_after_tick(
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    actor_id: u32,
+) {
     let Some(handle) = registry.get(actor_id).await else {
         return;
     };
@@ -1788,6 +1815,7 @@ async fn apply_recalc_stats(
                 c.apply_player_weapon_damage_power(&items, &equipped);
             }
             c.apply_player_stat_derivation();
+            c.apply_food_bonuses();
         }
         c.recalculate_stats();
         let post = if is_player {
@@ -3345,7 +3373,7 @@ mod battle_exp_award_tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("garlemald-exp-award-{nanos}-{seq}.db"))
+        common::test_tmp::dir().join(format!("garlemald-exp-award-{nanos}-{seq}.db"))
     }
 
     fn make_zone(zone_id: u32) -> Zone {
@@ -3674,7 +3702,7 @@ mod pool_tick_sync_tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("garlemald-pool-tick-{nanos}-{seq}.db"))
+        common::test_tmp::dir().join(format!("garlemald-pool-tick-{nanos}-{seq}.db"))
     }
 
     /// Zone 100 with one Player (session + client channel attached),

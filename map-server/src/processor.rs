@@ -58,6 +58,9 @@ use crate::social::{
 use crate::world_manager::WorldManager;
 
 mod equip;
+mod gm_spawn;
+mod items;
+mod quest_offers;
 
 /// Read a null-terminated ASCII string out of a fixed-size byte slice.
 /// Used by the retail-IN dispatch arms (`OP_RX_DATA_REQUEST`,
@@ -939,6 +942,8 @@ impl PacketProcessor {
         for quest_id in active_quest_ids {
             self.apply_quest_update_enpcs(actor_id, quest_id).await;
         }
+        // Then the quests on offer, so their givers show the marker.
+        self.refresh_quest_offers(&handle).await;
 
         Ok(())
     }
@@ -1466,18 +1471,21 @@ impl PacketProcessor {
                 quest_id,
             } => {
                 self.apply_add_quest(player_id, quest_id).await;
+                self.refresh_quest_offers_for(player_id).await;
             }
             LC::CompleteQuest {
                 player_id,
                 quest_id,
             } => {
                 self.apply_complete_quest(player_id, quest_id).await;
+                self.refresh_quest_offers_for(player_id).await;
             }
             LC::AbandonQuest {
                 player_id,
                 quest_id,
             } => {
                 self.apply_abandon_quest(player_id, quest_id).await;
+                self.refresh_quest_offers_for(player_id).await;
             }
             LC::DoEmote {
                 actor_id,
@@ -2657,6 +2665,21 @@ impl PacketProcessor {
         parent_zone_id: u32,
         expected_actor_id: u32,
     ) {
+        self.spawn_battle_npc(bnpc_id, parent_zone_id, expected_actor_id, None)
+            .await;
+    }
+
+    /// The battle-NPC spawn behind [`Self::apply_spawn_battle_npc_by_id`].
+    /// `gm` is set for a GM `!spawn`: the actor never respawns, and may use
+    /// a different class path than its gamedata row (`Some(path)`) to try
+    /// out a model's script.
+    async fn spawn_battle_npc(
+        &self,
+        bnpc_id: u32,
+        parent_zone_id: u32,
+        expected_actor_id: u32,
+        gm: Option<Option<String>>,
+    ) -> bool {
         // 1. Load the joined spawn DTO from the database.
         let spawn = match self.db.load_battle_npc_spawn(bnpc_id).await {
             Ok(Some(row)) => row,
@@ -2666,7 +2689,7 @@ impl PacketProcessor {
                     parent_zone = parent_zone_id,
                     "SpawnBattleNpcById: bnpc_id not in server_battlenpc_spawn_locations",
                 );
-                return;
+                return false;
             }
             Err(e) => {
                 tracing::warn!(
@@ -2674,14 +2697,14 @@ impl PacketProcessor {
                     error = %e,
                     "SpawnBattleNpcById: db query failed",
                 );
-                return;
+                return false;
             }
         };
 
         // 2. Resolve the ActorClass row keyed by spawn.actor_class_id.
         //    The class carries class_path / display_name_id / event
         //    conditions — required for AddActor + ActorInstantiate.
-        let actor_class = match self.db.load_actor_class(spawn.actor_class_id).await {
+        let mut actor_class = match self.db.load_actor_class(spawn.actor_class_id).await {
             Ok(Some(c)) => c,
             Ok(None) => {
                 tracing::warn!(
@@ -2689,7 +2712,7 @@ impl PacketProcessor {
                     actor_class_id = spawn.actor_class_id,
                     "SpawnBattleNpcById: actor_class not in gamedata_actor_class",
                 );
-                return;
+                return false;
             }
             Err(e) => {
                 tracing::warn!(
@@ -2697,9 +2720,13 @@ impl PacketProcessor {
                     error = %e,
                     "SpawnBattleNpcById: actor_class load failed",
                 );
-                return;
+                return false;
             }
         };
+
+        if let Some(Some(path)) = &gm {
+            actor_class.class_path = path.clone();
+        }
 
         // 3. Compute actor_number from expected_actor_id (must round-trip
         //    through the same `(4 << 28) | (zone << 19) | actor_number`
@@ -2768,7 +2795,7 @@ impl PacketProcessor {
             );
             // Bail rather than spawn at the wrong id; the script's
             // subsequent calls would target a phantom actor.
-            return;
+            return false;
         }
 
         // 4b. Phase C1 — apply combat metadata from the joined DTO
@@ -2814,7 +2841,7 @@ impl PacketProcessor {
                 parent_zone = parent_zone_id,
                 "SpawnBattleNpcById: parent zone not loaded",
             );
-            return;
+            return false;
         };
         {
             let mut zone = zone_arc.write().await;
@@ -2850,7 +2877,7 @@ impl PacketProcessor {
         // anyway). Detection: the spawn fires from a content script's
         // onCreate, which runs after `active_content_script` is set on
         // the owning session for this parent zone.
-        let content_spawn = {
+        let content_spawn = gm.is_some() || {
             let mut found = false;
             for mut snap in self.world.all_sessions().await {
                 if let Some(active) = snap.active_content_script.as_mut()
@@ -2927,6 +2954,12 @@ impl PacketProcessor {
         //    post-warp. Acceptable for the kick-test; the cinematic
         //    body fires from `delegateEvent processTtrBtl001` which
         //    is purely client-side rendering.
+        // GM spawns reach nearby players through the normal in-range
+        // streaming (send_instance_update); a second AddActor here would
+        // duplicate the actor and crash the client.
+        if gm.is_some() {
+            return true;
+        }
         let _ = zone_arc; // keep handle so registry insert works
         let _ = spawn.script_name.clone(); // suppress unused warning
         // crate::runtime::dispatcher::spawn_bundle_fanout(
@@ -2947,6 +2980,7 @@ impl PacketProcessor {
             "SpawnBattleNpcById applied — wire fan-out SKIPPED to keep \
              content-area NPCs out of the player's pre-warp view",
         );
+        true
     }
 
     /// Port of C# `Area::SpawnActor(classId, uniqueId, x, y, z, rot)`
@@ -7396,6 +7430,20 @@ impl PacketProcessor {
         hook_name: &'static str,
         extra_args: Vec<crate::lua::QuestHookArg>,
     ) {
+        self.fire_quest_event_hook_inner(handle, quest_id, hook_name, extra_args, false)
+            .await;
+    }
+
+    /// `fire_quest_event_hook`, or with `offer` for a quest on offer (not in
+    /// the journal: the hook sees it at `SEQ_ACCEPT`).
+    async fn fire_quest_event_hook_inner(
+        &self,
+        handle: &ActorHandle,
+        quest_id: u32,
+        hook_name: &'static str,
+        extra_args: Vec<crate::lua::QuestHookArg>,
+        offer: bool,
+    ) {
         let Some(engine) = self.lua.as_ref() else {
             return;
         };
@@ -7409,26 +7457,26 @@ impl PacketProcessor {
 
         let (snapshot, quest_handle) = {
             let c = handle.character.read().await;
-            if !c.quest_journal.has(quest_id) {
-                return;
-            }
             let snap = build_player_snapshot_from_character(&c);
-            let q = c.quest_journal.get(quest_id).expect("has");
-            let qh = crate::lua::LuaQuestHandle {
-                player_id: snap.actor_id,
-                quest_id,
-                has_quest: true,
-                sequence: q.get_sequence(),
-                flags: q.get_flags(),
-                counters: [
-                    q.get_counter(0),
-                    q.get_counter(1),
-                    q.get_counter(2),
-                    q.get_counter(3),
-                ],
-                npc_ls_from: q.get_npc_ls_from(),
-                npc_ls_msg_step: q.get_npc_ls_msg_step(),
-                queue: crate::lua::command::CommandQueue::new(),
+            let qh = match c.quest_journal.get(quest_id) {
+                Some(q) => crate::lua::LuaQuestHandle {
+                    player_id: snap.actor_id,
+                    quest_id,
+                    has_quest: true,
+                    sequence: q.get_sequence(),
+                    flags: q.get_flags(),
+                    counters: [
+                        q.get_counter(0),
+                        q.get_counter(1),
+                        q.get_counter(2),
+                        q.get_counter(3),
+                    ],
+                    npc_ls_from: q.get_npc_ls_from(),
+                    npc_ls_msg_step: q.get_npc_ls_msg_step(),
+                    queue: crate::lua::command::CommandQueue::new(),
+                },
+                None if offer => quest_offers::offer_handle(snap.actor_id, quest_id),
+                None => return,
             };
             (snap, qh)
         };
@@ -8592,6 +8640,10 @@ impl PacketProcessor {
     /// EventStart log. (Garlemald-Server #46.)
     const EMOTE_STANDARD_COMMAND: u32 = 0xA0F0_5E26;
 
+    /// `ItemCommand`: using an item from the Use Item window (potions, food).
+    /// No script; handled natively in `processor/items.rs`.
+    const ITEM_COMMAND: u32 = 0xA0F0_520F;
+
     /// Harvest command static actors — the client fires an `EventStart`
     /// against one of these (eventName `"commandRequest"`) when the
     /// player picks Mine / Log / Fish / Quarry / Harvest / Spearfish on a
@@ -8661,6 +8713,7 @@ impl PacketProcessor {
             Self::LOGOUT_COMMAND => Some("LogoutCommand"),
             Self::TELEPORT_COMMAND => Some("TeleportCommand"),
             Self::EMOTE_STANDARD_COMMAND => Some("EmoteStandardCommand"),
+            Self::ITEM_COMMAND => Some("ItemCommand"),
             id if Self::is_gather_command(id) => Some("DummyCommand"),
             // every other command with a script (EquipCommand, the
             // linkshell commands, ...), from gamedata_static_actors
@@ -8691,6 +8744,11 @@ impl PacketProcessor {
         // Equipping runs natively; the script needs bindings we don't have.
         if command_name == "EquipCommand" {
             self.apply_equip_command(handle, command_actor_id, event_name, &lua_params)
+                .await;
+            return;
+        }
+        if command_name == "ItemCommand" {
+            self.apply_item_command(handle, command_actor_id, event_name, &lua_params)
                 .await;
             return;
         }
@@ -9075,8 +9133,9 @@ impl PacketProcessor {
         let actor_id = handle.actor_id;
 
         // Round 7h: the basic attack must not accept FRIENDLY targets —
-        // players could soft-target THEMSELVES or an escort Ally (Sisipu)
-        // and auto-attack them down. Mirrors ValidTarget::ENEMY for the
+        // players could soft-target THEMSELVES, an escort Ally (Sisipu) or
+        // a townsperson / quest giver (Npc) and auto-attack them down.
+        // Mirrors ValidTarget::ENEMY for the
         // basic attack (battle/target_find.rs can_target is only applied
         // to AOE fan-out, never the primary target). Resolved before the
         // player write lock to avoid holding two actor locks.
@@ -9086,6 +9145,8 @@ impl PacketProcessor {
                     t.kind,
                     crate::runtime::actor_registry::ActorKindTag::Player
                         | crate::runtime::actor_registry::ActorKindTag::Ally
+                        | crate::runtime::actor_registry::ActorKindTag::Npc
+                        | crate::runtime::actor_registry::ActorKindTag::Pet
                 ),
                 None => false,
             }
@@ -9519,15 +9580,35 @@ impl PacketProcessor {
                 .map(|q| q.quest_id())
                 .collect()
         };
-        if active_quest_ids.is_empty() {
-            return;
-        }
         let Some(npc_spec) = self.build_npc_spec(npc_actor_id).await else {
             // Not a registered actor (e.g. director-owned kicks) — the
             // event went through the normal dispatch; we just skip the
             // quest-side fan-out loop.
             return;
         };
+
+        // A giver with a quest on offer: that quest's onTalk at SEQ_ACCEPT
+        // runs the offer, alone (another quest's generic EndEvent would
+        // close it).
+        if hook_name == "onTalk"
+            && let Some(quest_id) = self.offered_quest_at(handle, npc_spec.actor_class_id).await
+        {
+            self.fire_quest_event_hook_inner(
+                handle,
+                quest_id,
+                hook_name,
+                vec![
+                    crate::lua::QuestHookArg::Npc(npc_spec.clone()),
+                    crate::lua::QuestHookArg::Str(event_name.to_string()),
+                ],
+                true,
+            )
+            .await;
+            return;
+        }
+        if active_quest_ids.is_empty() {
+            return;
+        }
 
         // Populace NPCs with their own menu script (chocobo lender, shops,
         // leve publishers, …) run that script for the talk; a quest's
@@ -10187,7 +10268,12 @@ impl PacketProcessor {
             // what the player may run: their account's GM level against
             // settings/commands.toml (crate::command_permissions)
             let level = self.db.gm_level_of_character(session_id).await.unwrap_or(0);
-            let feedback = if let Some(cmd) = &self.cmd {
+            let feedback = if let Some(r) = self.gm_spawn_command(&handle, &line, level).await {
+                Some(match r {
+                    Ok(m) => (ChatKind::System, m),
+                    Err(m) => (ChatKind::SystemError, m),
+                })
+            } else if let Some(cmd) = &self.cmd {
                 match cmd.run_as_player(&line, &invoker, level).await {
                     Ok(response) if !response.is_empty() => {
                         tracing::info!(%response, "command result");

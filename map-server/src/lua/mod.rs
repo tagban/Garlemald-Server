@@ -1595,7 +1595,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("garlemald-lua-engine-{nanos}"));
+        let dir = common::test_tmp::dir().join(format!("garlemald-lua-engine-{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

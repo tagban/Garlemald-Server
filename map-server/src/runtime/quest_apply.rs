@@ -7645,7 +7645,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("garlemald-onnotice-{nanos}-{seq}"));
+        let dir = common::test_tmp::dir().join(format!("garlemald-onnotice-{nanos}-{seq}"));
         std::fs::create_dir_all(dir.join("quests/man")).unwrap();
         dir
     }
@@ -7658,7 +7658,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("garlemald-onnotice-{nanos}-{seq}.db"))
+        common::test_tmp::dir().join(format!("garlemald-onnotice-{nanos}-{seq}.db"))
     }
 
     /// `apply_quest_on_notice` resolves the script, fires

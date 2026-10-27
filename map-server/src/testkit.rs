@@ -631,5 +631,5 @@ fn tempdb() -> std::path::PathBuf {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("garlemald-testkit-{nanos}-{seq}.db"))
+    common::test_tmp::dir().join(format!("garlemald-testkit-{nanos}-{seq}.db"))
 }
