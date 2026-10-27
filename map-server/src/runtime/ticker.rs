@@ -1095,7 +1095,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("garlemald-ticker-{nanos}-{seq}.db"))
+        common::test_tmp::dir().join(format!("garlemald-ticker-{nanos}-{seq}.db"))
     }
 
     async fn setup_one_zone_one_actor() -> (GameTicker, Arc<RwLock<Zone>>) {

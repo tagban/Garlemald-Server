@@ -1396,7 +1396,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("garlemald-event-dispatch-{nanos}-{seq}"));
+        let dir = common::test_tmp::dir().join(format!("garlemald-event-dispatch-{nanos}-{seq}"));
         std::fs::create_dir_all(dir.join("quests/man")).unwrap();
         dir
     }
@@ -1412,7 +1412,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("garlemald-event-dispatch-{nanos}-{seq}.db"))
+        common::test_tmp::dir().join(format!("garlemald-event-dispatch-{nanos}-{seq}.db"))
     }
 
     #[tokio::test]

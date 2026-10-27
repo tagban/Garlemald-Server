@@ -624,7 +624,7 @@ mod tests {
     #[tokio::test]
     async fn world_sessions_follow_the_lifecycle() {
         let path =
-            std::env::temp_dir().join(format!("xivl-world-sessions-{}.db", std::process::id()));
+            common::test_tmp::dir().join(format!("xivl-world-sessions-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let db = Database::open(&path).await.unwrap();
         db.conn_for_test()

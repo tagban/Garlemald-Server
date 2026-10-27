@@ -3345,7 +3345,7 @@ mod battle_exp_award_tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("garlemald-exp-award-{nanos}-{seq}.db"))
+        common::test_tmp::dir().join(format!("garlemald-exp-award-{nanos}-{seq}.db"))
     }
 
     fn make_zone(zone_id: u32) -> Zone {
@@ -3674,7 +3674,7 @@ mod pool_tick_sync_tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("garlemald-pool-tick-{nanos}-{seq}.db"))
+        common::test_tmp::dir().join(format!("garlemald-pool-tick-{nanos}-{seq}.db"))
     }
 
     /// Zone 100 with one Player (session + client channel attached),

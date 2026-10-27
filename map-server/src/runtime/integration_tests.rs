@@ -49,7 +49,7 @@ fn tempdb() -> std::path::PathBuf {
         .unwrap()
         .as_nanos();
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("garlemald-integration-{nanos}-{seq}.db"))
+    common::test_tmp::dir().join(format!("garlemald-integration-{nanos}-{seq}.db"))
 }
 
 #[tokio::test]
@@ -2141,7 +2141,7 @@ async fn quest_set_enpc_emits_event_status_and_quest_graphic_packets() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let script_root = std::env::temp_dir().join(format!("garlemald-phase-e-{nanos}"));
+    let script_root = common::test_tmp::dir().join(format!("garlemald-phase-e-{nanos}"));
     std::fs::create_dir_all(script_root.join("quests/man")).unwrap();
     std::fs::write(
         script_root.join("quests/man/man0l0.lua"),
@@ -4448,7 +4448,7 @@ async fn command_actor_identity_threads_clicked_gather_node() {
     use crate::world_manager::GatherNodeMetadata;
     use std::collections::HashMap;
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-gather-cmd-identity-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -5668,7 +5668,7 @@ async fn logout_and_quitgame_bindings_emit_lua_commands() {
     use crate::lua::command::CommandQueue;
     use crate::lua::userdata::{LuaPlayer, PlayerSnapshot};
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-logout-bindings-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -7237,7 +7237,7 @@ async fn lua_director_end_guildleve_binding_pushes_command() {
     use crate::lua::command::CommandQueue;
     use crate::lua::userdata::LuaDirectorHandle;
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-end-guildleve-binding-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -7318,7 +7318,7 @@ async fn lua_director_remaining_leve_bindings_push_correct_commands() {
     use crate::lua::command::CommandQueue;
     use crate::lua::userdata::LuaDirectorHandle;
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-leve-bindings-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -7734,7 +7734,7 @@ async fn director_main_coroutine_wait_then_end_guildleve_drains_through_ticker()
     // time is 20+ seconds — test would timeout waiting for the
     // scheduler to advance. The synthetic script exercises the same
     // mechanics in a wait granularity the test can control.
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-director-main-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -7953,7 +7953,7 @@ async fn director_main_coroutine_without_wait_completes_on_first_slice() {
     use crate::lua::userdata::LuaDirectorHandle;
     use crate::lua::{LuaCommandKind as LuaCommand, LuaEngine};
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-director-nowait-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -8010,7 +8010,7 @@ async fn director_main_coroutine_missing_main_is_quiet_noop() {
     use crate::lua::command::CommandQueue;
     use crate::lua::userdata::LuaDirectorHandle;
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-director-nomain-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -10313,7 +10313,7 @@ async fn gc_promotion_helpers_drive_officer_logic_end_to_end() {
     use crate::lua::LuaEngine;
     use crate::lua::userdata::{LuaPlayer, PlayerSnapshot};
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-fc-helpers-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -13253,7 +13253,7 @@ async fn ticker_survives_tutorial_state_and_drains_time_parks() {
     // Script root with the real bare-yield helpers + a director that
     // parks on wait() — the same shape the live SEQ_005 director is in
     // right after the F-press signal resume.
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-ticker-liveness-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -13286,7 +13286,7 @@ async fn ticker_survives_tutorial_state_and_drains_time_parks() {
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());
     let db = Arc::new(
-        crate::database::Database::open(std::env::temp_dir().join(format!(
+        crate::database::Database::open(common::test_tmp::dir().join(format!(
                 "garlemald-ticker-liveness-{}.db",
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -13724,7 +13724,7 @@ async fn apply_content_finished_tears_down_content_state() {
 
     // Script root: a director parked on waitForSignal so the scheduler
     // holds a signal park owned by the player.
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-content-finished-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -13929,7 +13929,7 @@ async fn content_on_update_send_signal_resumes_parked_coroutine() {
     use crate::data::Session as MapSession;
     use crate::runtime::ticker::{GameTicker, TickerConfig};
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-onupdate-signal-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -15039,7 +15039,7 @@ struct KillGateScene {
 async fn kill_gate_scene() -> KillGateScene {
     use crate::data::Session as MapSession;
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-killgate-{}-{:?}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

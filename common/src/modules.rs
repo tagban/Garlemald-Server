@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn loads_a_module_and_applies_its_sql_once() {
-        let root = std::env::temp_dir().join(format!("xivl-modules-{}", std::process::id()));
+        let root = crate::test_tmp::dir().join(format!("xivl-modules-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let dir = module_dir(
             &root,
