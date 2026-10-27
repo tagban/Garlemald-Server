@@ -59,6 +59,7 @@ use crate::world_manager::WorldManager;
 
 mod equip;
 mod gm_spawn;
+mod items;
 mod quest_offers;
 
 /// Read a null-terminated ASCII string out of a fixed-size byte slice.
@@ -8631,6 +8632,10 @@ impl PacketProcessor {
     /// EventStart log. (Garlemald-Server #46.)
     const EMOTE_STANDARD_COMMAND: u32 = 0xA0F0_5E26;
 
+    /// `ItemCommand`: using an item from the Use Item window (potions, food).
+    /// No script; handled natively in `processor/items.rs`.
+    const ITEM_COMMAND: u32 = 0xA0F0_520F;
+
     /// Harvest command static actors — the client fires an `EventStart`
     /// against one of these (eventName `"commandRequest"`) when the
     /// player picks Mine / Log / Fish / Quarry / Harvest / Spearfish on a
@@ -8700,6 +8705,7 @@ impl PacketProcessor {
             Self::LOGOUT_COMMAND => Some("LogoutCommand"),
             Self::TELEPORT_COMMAND => Some("TeleportCommand"),
             Self::EMOTE_STANDARD_COMMAND => Some("EmoteStandardCommand"),
+            Self::ITEM_COMMAND => Some("ItemCommand"),
             id if Self::is_gather_command(id) => Some("DummyCommand"),
             // every other command with a script (EquipCommand, the
             // linkshell commands, ...), from gamedata_static_actors
@@ -8730,6 +8736,11 @@ impl PacketProcessor {
         // Equipping runs natively; the script needs bindings we don't have.
         if command_name == "EquipCommand" {
             self.apply_equip_command(handle, command_actor_id, event_name, &lua_params)
+                .await;
+            return;
+        }
+        if command_name == "ItemCommand" {
+            self.apply_item_command(handle, command_actor_id, event_name, &lua_params)
                 .await;
             return;
         }

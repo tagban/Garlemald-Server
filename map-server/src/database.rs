@@ -43,6 +43,19 @@ use crate::gamedata::{
     StatusEffectDef, StatusEffectEntry, TIMER_COLUMNS, class_column,
 };
 
+/// A consumable's use data, from [`Database::usable_item`].
+#[derive(Debug, Clone, Default)]
+pub struct UsableItem {
+    /// `Normal/PotionItem`, `Normal/FoodItem`, `Normal/EnchantMedicineItem`, ...
+    pub category: String,
+    pub usable: bool,
+    pub recast_s: f32,
+    pub recast_group: i32,
+    pub duration_s: f32,
+    /// (paramBonus type, value, cap; 0 = no cap)
+    pub effects: Vec<(u32, i32, i32)>,
+}
+
 /// One row of `server_zones` — the on-disk record for a zone template.
 #[derive(Debug, Clone, Default)]
 pub struct ZoneRow {
@@ -2922,6 +2935,56 @@ impl Database {
             })
             .await?;
         Ok(())
+    }
+
+    /// What using `catalog_id` does: the gamedata row's category, recast and
+    /// duration, plus its bonuses. Consumables keep them in
+    /// `gamedata_items_equipment`: slot 3 is food's EXP bonus, slots 5-7 the
+    /// effects (`1015xxx` a percent stat buff, `1016xxx` a percent HP/MP
+    /// restore) and slots 8-10 each effect's cap (0 = none).
+    pub async fn usable_item(&self, catalog_id: u32) -> Result<Option<UsableItem>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT i.category, i.isUseable, i.recastTime, i.recastGroup, i.effectDuration,
+                            e.paramBonusType3, e.paramBonusValue3,
+                            e.paramBonusType5, e.paramBonusValue5,
+                            e.paramBonusType6, e.paramBonusValue6,
+                            e.paramBonusType7, e.paramBonusValue7,
+                            e.paramBonusValue8, e.paramBonusValue9, e.paramBonusValue10
+                     FROM gamedata_items i
+                     LEFT JOIN gamedata_items_equipment e ON e.catalogID = i.catalogID
+                     WHERE i.catalogID = ?1",
+                    [catalog_id],
+                    |r| {
+                        let int = |k: usize| -> rusqlite::Result<i32> {
+                            Ok(r.get::<_, Option<i32>>(k)?.unwrap_or(-1))
+                        };
+                        let mut effects = Vec::new();
+                        for k in 0..3 {
+                            let (kind, value, cap) =
+                                (int(7 + 2 * k)?, int(8 + 2 * k)?, int(13 + k)?);
+                            if kind > 0 && value != 0 {
+                                effects.push((kind as u32, value, cap.max(0)));
+                            }
+                        }
+                        let (exp_kind, exp_value) = (int(5)?, int(6)?);
+                        if exp_kind > 0 && exp_value != 0 {
+                            effects.push((exp_kind as u32, exp_value, 0));
+                        }
+                        Ok(UsableItem {
+                            category: r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                            usable: r.get::<_, Option<i32>>(1)?.unwrap_or(0) != 0,
+                            recast_s: r.get::<_, Option<f64>>(2)?.unwrap_or(0.0) as f32,
+                            recast_group: r.get::<_, Option<i32>>(3)?.unwrap_or(0),
+                            duration_s: r.get::<_, Option<f64>>(4)?.unwrap_or(0.0) as f32,
+                            effects,
+                        })
+                    },
+                )
+                .optional()
+            })
+            .await
     }
 
     /// GM `!spawn`: temporary pool / group / spawn rows for `class_id` at

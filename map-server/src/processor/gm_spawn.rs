@@ -26,6 +26,9 @@
 //! monster within 20 yalms), through the normal death path: EXP, seals and
 //! quest / leve kill hooks fire as if you'd won the fight. `!kill <name>`
 //! stays the FFXI name for `!die`, and both need `die`'s GM level.
+//!
+//! `!sethp <hp>` sets your current HP (up to your max), for testing potions
+//! and healing.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -65,7 +68,7 @@ impl PacketProcessor {
         let mut words = line.split_whitespace();
         let name = words.next()?.to_ascii_lowercase();
         let kill = name == "kill" && matches!(words.clone().next(), None | Some("all"));
-        if name != "spawn" && name != "despawn" && !kill {
+        if name != "spawn" && name != "despawn" && name != "sethp" && !kill {
             return None;
         }
         let permission = if kill { "die" } else { name.as_str() };
@@ -76,6 +79,23 @@ impl PacketProcessor {
             let c = handle.character.read().await;
             (handle.zone_id, c.base.position(), c.base.rotation)
         };
+        if name == "sethp" {
+            let Some(hp) = words.next().and_then(|w| w.parse::<i32>().ok()) else {
+                return Some(Err("usage: !sethp <hp>".into()));
+            };
+            let hp = {
+                let mut c = handle.character.write().await;
+                c.set_hp(hp);
+                c.chara.hp
+            };
+            crate::runtime::dispatcher::sync_pools_after_tick(
+                &self.registry,
+                &self.world,
+                handle.actor_id,
+            )
+            .await;
+            return Some(Ok(format!("HP set to {hp}.")));
+        }
         if kill {
             return Some(self.gm_kill(handle, words.next() == Some("all")).await);
         }
