@@ -1517,6 +1517,19 @@ async fn apply_change_speed(
     };
     let mut sub =
         crate::packets::send::actor::build_set_actor_speed(player_id, stop, walk, run, active);
+    // Meteor's ChangeSpeed flags the speed for the area broadcast, so
+    // players nearby animate a mounted rider at riding pace instead of
+    // sliding a walking avatar around.
+    if let Some(zone) = world.zone(handle.zone_id).await {
+        crate::runtime::broadcast::broadcast_around_actor(
+            world,
+            registry,
+            &zone,
+            player_id,
+            sub.to_bytes(),
+        )
+        .await;
+    }
     sub.set_target_id(session_id);
     client.send_bytes(sub.to_bytes()).await;
     tracing::debug!(

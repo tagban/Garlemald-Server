@@ -1093,7 +1093,12 @@ pub(crate) fn push_other_player_spawn(
         .max(1) as u16;
     subpackets.extend([
         tx::actor::build_add_actor(actor_id, 8),
-        tx::actor::build_set_actor_speed_default(actor_id),
+        if chara.mount_state != 0 {
+            // ChocoboRideCommand / PopulaceChocoboLender riding speeds.
+            tx::actor::build_set_actor_speed(actor_id, 0.0, 5.0, 10.0, 10.0)
+        } else {
+            tx::actor::build_set_actor_speed_default(actor_id)
+        },
         tx::actor::build_set_actor_position(
             actor_id,
             actor_id as i32,
@@ -1105,10 +1110,11 @@ pub(crate) fn push_other_player_spawn(
             false,
         ),
         tx::actor::build_set_actor_appearance(actor_id, chara.model_id, &chara.appearance_ids),
-        tx::actor::build_set_actor_name(
+        tx::actor::build_set_actor_name_sexed(
             actor_id,
             character.base.display_name_id,
             character.base.display_name(),
+            crate::gamedata::tribe_is_female(chara.tribe),
         ),
         tx::handshake::build_0xf(actor_id),
         tx::actor::build_set_actor_state(actor_id, character.base.current_main_state as u8, 0),
@@ -1117,11 +1123,38 @@ pub(crate) fn push_other_player_spawn(
         tx::actor::build_set_actor_icon(actor_id, crate::gm_tags::icon(actor_id)),
         tx::actor::build_set_actor_is_zoning(actor_id, false),
     ]);
-    if chara.current_job != 0 {
-        subpackets.push(tx::player::build_set_current_job(actor_id, chara.current_job as u32));
+    // Meteor's `CreatePlayerRelatedPackets` order: grand company,
+    // title, job, then the mount the player is riding.
+    if chara.gc_current != 0 {
+        subpackets.push(tx::player::build_set_grand_company(
+            actor_id,
+            chara.gc_current,
+            chara.gc_rank_limsa,
+            chara.gc_rank_gridania,
+            chara.gc_rank_uldah,
+        ));
     }
     if chara.current_title != 0 {
-        subpackets.push(tx::player::build_set_player_title(actor_id, chara.current_title));
+        subpackets.push(tx::player::build_set_player_title(
+            actor_id,
+            chara.current_title,
+        ));
+    }
+    if chara.current_job != 0 {
+        subpackets.push(tx::player::build_set_current_job(
+            actor_id,
+            chara.current_job as u32,
+        ));
+    }
+    match chara.mount_state {
+        1 => subpackets.push(tx::player::build_set_current_mount_chocobo(
+            actor_id,
+            chara.chocobo_appearance,
+            chara.rental_expire_time,
+            chara.rental_min_left,
+        )),
+        2 => subpackets.push(tx::player::build_set_current_mount_goobbue(actor_id, 1)),
+        _ => {}
     }
     use common::luaparam::LuaParam;
     subpackets.push(tx::actor::build_actor_instantiate(
@@ -2381,7 +2414,12 @@ impl WorldManager {
                 /* is_zoning_player */ spawn_type != SPAWN_TYPE_INSTANT_ZONE_IN,
             ),
             tx::actor::build_set_actor_appearance(actor_id, model_id, &appearance_ids),
-            tx::actor::build_set_actor_name(actor_id, display_name_id, &actor_name),
+            tx::actor::build_set_actor_name_sexed(
+                actor_id,
+                display_name_id,
+                &actor_name,
+                crate::gamedata::tribe_is_female(tribe),
+            ),
             tx::handshake::build_0xf(actor_id),
             tx::actor::build_set_actor_state(actor_id, main_state, 0),
             tx::actor::build_set_actor_sub_state(actor_id, 0, 0, 0, 0, 0, 0),
@@ -4108,8 +4146,7 @@ impl WorldManager {
                             && !session.known_players.contains(&a.actor_id)
                             && center.is_none_or(|c| {
                                 let (dx, dz) = (a.position.x - c.x, a.position.z - c.z);
-                                dx * dx + dz * dz
-                                    <= INSTANCE_STREAM_RADIUS * INSTANCE_STREAM_RADIUS
+                                dx * dx + dz * dz <= INSTANCE_STREAM_RADIUS * INSTANCE_STREAM_RADIUS
                             })
                     })
                     .map(|a| a.actor_id)
@@ -4599,5 +4636,46 @@ mod tests {
 
         assert!(!wm.zone(1).await.unwrap().read().await.core.contains(100));
         assert!(wm.zone(2).await.unwrap().read().await.core.contains(100));
+    }
+}
+
+#[cfg(test)]
+mod other_player_spawn_tests {
+    use super::push_other_player_spawn;
+    use crate::packets::opcodes::*;
+
+    #[test]
+    fn carries_sex_grand_company_and_mount() {
+        let mut c = crate::actor::Character::new(7);
+        c.chara.tribe = 12; // Seeker of the Sun: female
+        c.chara.gc_current = 2;
+        c.chara.gc_rank_gridania = 11;
+        c.chara.mount_state = 1;
+        c.chara.chocobo_appearance = 1;
+        let mut out = Vec::new();
+        push_other_player_spawn(&mut out, &c);
+        let find = |op: u16| out.iter().find(|p| p.game_message.opcode == op);
+        assert_eq!(
+            &find(OP_SET_ACTOR_NAME).unwrap().data[0x24..0x28],
+            &[1, 0, 0, 0]
+        );
+        assert_eq!(
+            &find(OP_SET_GRAND_COMPANY).unwrap().data[..4],
+            &[2, 127, 11, 127]
+        );
+        assert_eq!(find(OP_SET_CURRENT_MOUNT_CHOCOBO).unwrap().data[5], 1);
+        let speed = find(OP_SET_ACTOR_SPEED).unwrap();
+        assert!(speed.data.windows(4).any(|w| w == 10.0f32.to_le_bytes()));
+
+        let mut out = Vec::new();
+        push_other_player_spawn(&mut out, &crate::actor::Character::new(8));
+        assert!(
+            !out.iter()
+                .any(|p| p.game_message.opcode == OP_SET_GRAND_COMPANY)
+        );
+        assert!(
+            !out.iter()
+                .any(|p| p.game_message.opcode == OP_SET_CURRENT_MOUNT_CHOCOBO)
+        );
     }
 }

@@ -310,6 +310,13 @@ pub(crate) fn pack_face_info(
         | ((face_eyebrows as u32 & 0x7) << 27)
 }
 
+/// Whether a tribe id is a female one (the client tribe sheet's
+/// `IsFemale`): Midlander, Wildwood, Duskwight, Plainsfolk and
+/// Dunesfolk females, and both Miqo'te tribes.
+pub fn tribe_is_female(tribe: u8) -> bool {
+    matches!(tribe, 2 | 5 | 7 | 9 | 11 | 12 | 13)
+}
+
 /// Fallback model id when the DB stores the `baseId = 0xFFFFFFFF` sentinel.
 /// Full port of C# `CharacterUtils.GetTribeModel` — model ids are tiny
 /// integers (1..9) that index into the client's player-race model table.
