@@ -659,6 +659,9 @@ impl PacketProcessor {
             }
         }
         crate::gm_tags::set(session_id, false);
+        if let Some(handle) = self.registry.by_session(session_id).await {
+            self.world.detach_player(handle.actor_id, session_id).await;
+        }
         self.registry.remove_session(session_id).await;
         self.world.remove_session(session_id).await;
         let reply = tx::build_session_end(session_id, 1, 0);
@@ -9815,6 +9818,16 @@ impl PacketProcessor {
         // 2. Update the zone's spatial grid.
         self.world
             .update_actor_position(actor_id, session_id, Vector3::new(pkt.x, pkt.y, pkt.z))
+            .await;
+        // 2b. Show the move to the players who can see this one.
+        self.world
+            .broadcast_player_move(
+                actor_id,
+                session_id,
+                Vector3::new(pkt.x, pkt.y, pkt.z),
+                pkt.rot,
+                pkt.move_state,
+            )
             .await;
 
         // 3. Seamless-boundary check — may trigger a zone change or

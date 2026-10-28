@@ -1123,6 +1123,36 @@ pub fn build_npc_property_init(
     b.done()
 }
 
+/// `/_init` for ANOTHER player seen by this client: the battle-state slice
+/// of `Player.GetInitPackets` the nameplate and target bar read (HP/MP/TP,
+/// class, level). The rest of that dump (journal, leves, hotbar, profile)
+/// is the owner's private state and only goes in their own bundle.
+#[allow(clippy::too_many_arguments)]
+pub fn build_other_player_property_init(
+    actor_id: u32,
+    hp: u16,
+    hp_max: u16,
+    mp: u16,
+    mp_max: u16,
+    tp: u16,
+    main_skill: u8,
+    main_skill_level: u16,
+) -> Vec<SubPacket> {
+    let mut b = ActorPropertyPacketBuilder::new(actor_id, "/_init");
+    b.add_float("charaWork.battleSave.potencial", 1.0);
+    b.add_short("charaWork.parameterSave.hp[0]", hp);
+    b.add_short("charaWork.parameterSave.hpMax[0]", hp_max);
+    b.add_short("charaWork.parameterSave.mp", mp);
+    b.add_short("charaWork.parameterSave.mpMax", mp_max);
+    b.add_short("charaWork.parameterTemp.tp", tp);
+    if main_skill != 0 {
+        b.add_byte("charaWork.parameterSave.state_mainSkill[0]", main_skill);
+    }
+    // A SHORT on the wire, as in the player and NPC dumps.
+    b.add_short("charaWork.parameterSave.state_mainSkillLevel", main_skill_level.max(1));
+    b.done()
+}
+
 /// BattleNpc-only `npcWork/hate` property emission, modelled on Meteor's
 /// `BattleNpc.GetHateTypePacket` (Actors/Chara/Npc/BattleNpc.cs:145).
 /// Always emitted at the tail of the BattleNpc spawn bundle, after the
