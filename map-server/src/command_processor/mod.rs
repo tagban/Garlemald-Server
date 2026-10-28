@@ -842,6 +842,12 @@ impl CommandProcessor {
     /// whole load from a placeholder camera at floor level, before the
     /// player exists, so walking meanwhile looked like a broken camera.
     const SPAWN_FADE_IN: u8 = 0;
+    /// Same-zone warps: SPAWNTYPE 0x11, a quick fade with no loading screen.
+    const SPAWN_QUICK_WARP: u16 = 0x11;
+    /// The embedded actor id for that quick warp: 0xC0000000 (Kodama's
+    /// "no object"). With 0xFFFFFFFF ("self") the client moved the player
+    /// but left the camera at the old spot until the next step.
+    const QUICK_WARP_TARGET: i32 = 0xC000_0000_u32 as i32;
 
     async fn teleport(
         &self,
@@ -899,24 +905,28 @@ impl CommandProcessor {
             session.destination_spawn_type = Self::SPAWN_FADE_IN;
             self.world.upsert_session(session).await;
         }
-        // Same-zone warp — Meteor `WorldManager.DoPlayerMoveInZone`:
-        // a 0xE2 signal (0x10) followed by `CreateSpawnTeleportPacket`,
-        // which is SetActorPosition with the embedded actor id set to
-        // 0xFFFFFFFF ("self") — NOT the player's id; the client ignores
-        // the move otherwise. `warp.lua` passes spawn type 0x00
-        // (SPAWNTYPE_FADEIN) on this path.
+        // Same-zone warp: one SetActorPosition with spawn type 0x11
+        // (QuickWarp: fade out, move, fade in with the camera behind the
+        // player; no loading screen) and the embedded actor id 0xC0000000,
+        // as Kodama's `!pos` sends it. Meteor's `DoPlayerMoveInZone` sent a
+        // 0xE2 (0x10) signal first, then type 0x00 with id 0xFFFFFFFF: the
+        // scene reloaded and the camera looked at the ceiling for ~5 s.
         if current_zone_id == zone_id {
             if let Some(client) = self.world.client(session_id).await {
                 // The world-server relay drops subpackets whose target_id
                 // is 0 (`world-server/src/server.rs`, zone-reply fan-out),
-                // so stamp the destination session on both — verified via
+                // so stamp the destination session — verified via
                 // packet logs: un-stamped 0xE2/0xCE reached the world and
                 // were never forwarded to the client.
-                let mut e2 = crate::packets::send::build_0xe2(actor_id, 0x10);
-                e2.set_target_id(session_id);
-                client.send_bytes(e2.to_bytes()).await;
                 let mut pkt = crate::packets::send::build_set_actor_position(
-                    actor_id, -1, x, y, z, rotation, 0, false,
+                    actor_id,
+                    Self::QUICK_WARP_TARGET,
+                    x,
+                    y,
+                    z,
+                    rotation,
+                    Self::SPAWN_QUICK_WARP,
+                    false,
                 );
                 pkt.set_target_id(session_id);
                 client.send_bytes(pkt.to_bytes()).await;
