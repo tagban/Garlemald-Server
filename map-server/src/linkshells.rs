@@ -342,7 +342,9 @@ pub async fn disband(
         return false;
     }
     tracing::info!(player = chara_id, linkshell = %ls.1, "linkshell disbanded");
+    let line = format!("The linkshell “{}” has been disbanded.", ls.1);
     for (member, _, _) in members {
+        say(world, registry, member, &line).await;
         if let Some(h) = registry.get(member).await {
             send(
                 world,
@@ -411,8 +413,10 @@ pub(crate) async fn tell(
 }
 
 /// A plain system line to `chara_id`. The linkshell texts that carry the
-/// linkshell's name (25131, 25151, 25157, 25284) show it empty with
-/// Meteor's params ("You join “.”"), so those lines go this way instead.
+/// linkshell's name (25131, 25151, 25157, 25280, 25284) show it empty with
+/// Meteor's params ("You join “.”"), so those lines go this way instead,
+/// as do the ones Meteor never sent (a member leaves, your rank changed,
+/// the linkshell is disbanded).
 async fn say(world: &WorldManager, registry: &ActorRegistry, chara_id: u32, line: &str) {
     let Some(h) = registry.get(chara_id).await else {
         return;
@@ -856,6 +860,10 @@ pub async fn leave(
     )
     .await;
     remove_member(registry, world, db, &ls, chara_id).await;
+    let line = format!("{} leaves “{}.”", name_of(db, chara_id).await, ls.1);
+    for (member, _, _) in members.iter().filter(|m| m.0 != chara_id) {
+        say(world, registry, *member, &line).await;
+    }
     tracing::info!(player = chara_id, linkshell = %ls.1, "left a linkshell");
 }
 
@@ -910,18 +918,11 @@ pub async fn kick(
             )
             .await;
         } else {
-            tell(
-                world,
-                registry,
-                *member,
-                25280,
-                vec![
-                    LuaParam::Int32(1),
-                    LuaParam::String(kicked.2.clone()),
-                    LuaParam::String(ls.1.clone()),
-                ],
-            )
-            .await;
+            let line = format!(
+                "{} has been exiled from the linkshell “{}.”",
+                kicked.2, ls.1
+            );
+            say(world, registry, *member, &line).await;
         }
     }
     remove_member(registry, world, db, &ls, kicked.0).await;
@@ -989,6 +990,13 @@ pub async fn change_rank(
             ],
         )
         .await;
+        let title = match rank {
+            0x7 => "Leader",
+            0x4 => "Member",
+            _ => "Guest",
+        };
+        let line = format!("Your rank in “{}” has been changed to {title}.", ls.1);
+        say(world, registry, member.0, &line).await;
     }
 }
 
