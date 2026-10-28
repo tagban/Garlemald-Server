@@ -3270,7 +3270,10 @@ impl WorldManager {
             // name, synthetic `bnpc_<id>` fallback for a not-yet-
             // registered member (rare race window). (Garlemald-Server
             // #46.)
-            let mut members = Vec::with_capacity(1 + session.transient_party_members.len());
+            // The player's party (crate::parties) comes before the
+            // content allies.
+            let roster_ids = crate::parties::roster(actor_id, &session.transient_party_members);
+            let mut members = Vec::with_capacity(1 + roster_ids.len());
             members.push(tx::groups::GroupMember::row_for_actor(
                 actor_id,
                 &actor_name,
@@ -3288,7 +3291,7 @@ impl WorldManager {
             // draws nothing for the row (see the helper's doc —
             // Garlemald-Server #46, round 4).
             let mut member_details: Vec<(u32, String, u32, Option<common::Vector3>)> = Vec::new();
-            for &mid in &session.transient_party_members {
+            for &mid in &roster_ids {
                 // Defensive: the transient list excludes the leader by
                 // convention (see `Session.transient_party_members`), but
                 // slot[0] must stay the requester, so skip a stray self id.
@@ -3345,8 +3348,15 @@ impl WorldManager {
             // 0x018B companions below MUST carry this same id: retail's
             // `invite_join_party.pcapng` shows one id shared by the
             // party trio (frame#92) and every 0x018D (frames #9..#96).
-            let group_index =
-                tx::groups::party_group_index(actor_id, members.len(), session.party_group_ordinal);
+            let group_index = crate::parties::solo_group(actor_id)
+                .filter(|_| members.len() <= 1)
+                .unwrap_or_else(|| {
+                    tx::groups::party_group_index(
+                        actor_id,
+                        members.len(),
+                        session.party_group_ordinal,
+                    )
+                });
             let mut offset = 0usize;
             let group_pkts = vec![
                 tx::groups::build_group_header(
@@ -3384,6 +3394,16 @@ impl WorldManager {
                 sub.set_target_id(session_id);
                 client.send_bytes(sub.to_bytes()).await;
             }
+            if members.len() > 1 {
+                let mut sub = crate::parties::owner_packet(
+                    actor_id,
+                    group_index,
+                    crate::parties::leader_of(actor_id),
+                );
+                sub.set_target_id(session_id);
+                client.send_bytes(sub.to_bytes()).await;
+            }
+            crate::parties::note_sent(actor_id, group_index);
 
             // 0x018D PartyMapMarkerUpdate — the "where is each party
             // member on the world map" overlay. Retail emits this on

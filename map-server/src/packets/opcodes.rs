@@ -162,6 +162,9 @@ pub const OP_RX_DATA_REQUEST: u16 = 0x012F;
 /// name (`/_init`) padded to 16 bytes + 16 bytes reserved. Retail
 /// fires 270 of these per session; dropped before this audit.
 pub const OP_RX_GROUP_CREATED: u16 = 0x0133;
+/// Party chat (`/p`): u32 actor id, then the message (0x200 bytes) —
+/// Meteor `PartyChatMessagePacket`, which its world server intercepted.
+pub const OP_RX_PARTY_CHAT: u16 = 0x00C9;
 // Wiki: "Target Locked" (client→server). The 1.x client sends this
 // when the player presses target-lock on an actor. Const already
 // defined (`OP_RX_LOCK_TARGET = 0x00CC` below) but **not** in
