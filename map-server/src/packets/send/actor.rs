@@ -1154,6 +1154,14 @@ pub fn build_other_player_property_init(
 ) -> Vec<SubPacket> {
     let mut b = ActorPropertyPacketBuilder::new(actor_id, "/_init");
     b.add_float("charaWork.battleSave.potencial", 1.0);
+    // The nameplate and targeting flags the player's own init carries
+    // (see `build_player_property_init`): without them another player
+    // stands there with no nameplate and can't be clicked or targeted.
+    // Kodama's networked-player init sends the same slots.
+    b.add_byte("charaWork.property[0]", 1);
+    b.add_byte("charaWork.property[1]", 1);
+    b.add_byte("charaWork.property[2]", 1);
+    b.add_byte("charaWork.property[4]", 1);
     b.add_short("charaWork.parameterSave.hp[0]", hp);
     b.add_short("charaWork.parameterSave.hpMax[0]", hp_max);
     b.add_short("charaWork.parameterSave.mp", mp);
