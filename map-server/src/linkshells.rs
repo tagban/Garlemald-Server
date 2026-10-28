@@ -52,7 +52,7 @@ pub fn name_allowed(name: &str) -> bool {
         && !name.ends_with(' ')
 }
 
-async fn send(world: &WorldManager, session_id: u32, packets: Vec<SubPacket>) {
+pub(crate) async fn send(world: &WorldManager, session_id: u32, packets: Vec<SubPacket>) {
     if let Some(client) = world.client(session_id).await {
         for mut p in packets {
             p.set_target_id(session_id);
@@ -61,7 +61,7 @@ async fn send(world: &WorldManager, session_id: u32, packets: Vec<SubPacket>) {
     }
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -370,10 +370,11 @@ const MAX_MEMBERS: usize = 128;
 
 /// A pending linkpearl offer, by invitee.
 #[derive(Clone, Copy)]
-struct Invite {
-    inviter: u32,
-    linkshell: u64,
-    relation: u64,
+pub(crate) struct Invite {
+    pub(crate) inviter: u32,
+    /// The linkshell offered (0 for a party offer).
+    pub(crate) linkshell: u64,
+    pub(crate) relation: u64,
 }
 
 fn invites() -> &'static std::sync::Mutex<std::collections::HashMap<u32, Invite>> {
@@ -382,13 +383,13 @@ fn invites() -> &'static std::sync::Mutex<std::collections::HashMap<u32, Invite>
     INVITES.get_or_init(Default::default)
 }
 
-fn next_relation_id() -> u64 {
+pub(crate) fn next_relation_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
     0x8000_4C52_0000_0000 | NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) as u64
 }
 
 /// A line from the WorldMaster text sheet (Meteor `Session.SendGameMessage`).
-async fn tell(
+pub(crate) async fn tell(
     world: &WorldManager,
     registry: &ActorRegistry,
     chara_id: u32,
@@ -409,7 +410,7 @@ async fn tell(
     send(world, h.session_id, vec![pkt]).await;
 }
 
-async fn name_of(db: &Database, chara_id: u32) -> String {
+pub(crate) async fn name_of(db: &Database, chara_id: u32) -> String {
     db.character_name(chara_id)
         .await
         .ok()
@@ -417,13 +418,16 @@ async fn name_of(db: &Database, chara_id: u32) -> String {
         .unwrap_or_default()
 }
 
-/// The relation group that shows the offer to both players.
-async fn send_relation(
+/// The relation group that shows the offer to both players. `command` is
+/// the invite kind the client's confirm window uses (10001 party, 10002
+/// linkshell).
+pub(crate) async fn send_relation(
     world: &WorldManager,
     registry: &ActorRegistry,
     db: &Database,
     inv: Invite,
     invitee: u32,
+    command: u32,
 ) {
     let members: Vec<(u32, u8, String)> = vec![
         (inv.inviter, 0, name_of(db, inv.inviter).await),
@@ -448,7 +452,6 @@ async fn send_relation(
             })
             .collect();
         let mut offset = 0usize;
-        let host = ((inv.inviter as u64) << 32) | 0xC1_7909;
         let packets = vec![
             tx::build_group_header(
                 h.actor_id,
@@ -463,29 +466,62 @@ async fn send_relation(
             tx::build_group_members_begin(h.actor_id, location, seq, inv.relation, 2),
             tx::build_group_members_x08(h.actor_id, location, seq, &list, &mut offset),
             tx::build_group_members_end(h.actor_id, location, seq, inv.relation),
-            tx::build_synch_group_work_values_entries(
-                h.actor_id,
-                inv.relation,
-                &[
-                    tx::WorkValue {
-                        kind: 8,
-                        name: "work._globalTemp.host".into(),
-                        value: host.to_le_bytes().to_vec(),
-                    },
-                    tx::WorkValue {
-                        kind: 4,
-                        name: "work._globalTemp.variableCommand".into(),
-                        value: INVITE_COMMAND_LINKSHELL.to_le_bytes().to_vec(),
-                    },
-                ],
-                "/_init",
-            ),
+            relation_work(h.actor_id, inv, command),
         ];
         send(world, h.session_id, packets).await;
     }
 }
 
-async fn delete_relation(
+/// The relation group's work values: who offers (Meteor's host marker in
+/// the low half) and what (`variableCommand`). The client's
+/// GroupInvitationRelationGroup only lights its confirm command once
+/// these arrive as the answer to its group-created (`/_init`).
+pub(crate) fn relation_work(actor: u32, inv: Invite, command: u32) -> SubPacket {
+    let host = ((inv.inviter as u64) << 32) | 0xC1_7909;
+    tx::build_synch_group_work_values_entries(
+        actor,
+        inv.relation,
+        &[
+            tx::WorkValue {
+                kind: 8,
+                name: "work._globalTemp.host".into(),
+                value: host.to_le_bytes().to_vec(),
+            },
+            tx::WorkValue {
+                kind: 4,
+                name: "work._globalTemp.variableCommand".into(),
+                value: command.to_le_bytes().to_vec(),
+            },
+        ],
+        "/_init",
+    )
+}
+
+/// The client created the invitation group of a pending linkpearl offer
+/// (`/_init`). False when `gid` isn't one.
+pub async fn answer_relation_created(
+    world: &WorldManager,
+    actor_id: u32,
+    session_id: u32,
+    gid: u64,
+) -> bool {
+    let inv = invites()
+        .lock()
+        .ok()
+        .and_then(|m| m.values().find(|i| i.relation == gid).copied());
+    let Some(inv) = inv else {
+        return false;
+    };
+    send(
+        world,
+        session_id,
+        vec![relation_work(actor_id, inv, INVITE_COMMAND_LINKSHELL)],
+    )
+    .await;
+    true
+}
+
+pub(crate) async fn delete_relation(
     world: &WorldManager,
     registry: &ActorRegistry,
     inv: Invite,
@@ -572,7 +608,7 @@ pub async fn invite(
     if let Ok(mut m) = invites().lock() {
         m.insert(invitee, inv);
     }
-    send_relation(world, registry, db, inv, invitee).await;
+    send_relation(world, registry, db, inv, invitee, INVITE_COMMAND_LINKSHELL).await;
     tell(
         world,
         registry,

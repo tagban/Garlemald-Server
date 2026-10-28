@@ -2052,7 +2052,7 @@ impl UserData for LuaPlayer {
             Ok(this.snapshot.is_trade_accepted)
         });
         methods.add_method("IsPartyLeader", |_, this, _: ()| {
-            Ok(this.snapshot.is_party_leader)
+            Ok(crate::parties::is_leader(this.snapshot.actor_id))
         });
         methods.add_method("IsGM", |_, this, _: ()| Ok(this.snapshot.is_gm));
 
@@ -3170,11 +3170,51 @@ impl UserData for LuaPlayer {
         // / `QuitGame` bindings live earlier in this body.
 
         // --- Party ----------------------------------------------------------
-        methods.add_method("PartyLeave", |_, _this, _: ()| Ok(()));
-        methods.add_method("PartyDisband", |_, _this, _: ()| Ok(()));
-        methods.add_method("PartyKickPlayer", |_, _this, _name: String| Ok(()));
-        methods.add_method("PartyOustPlayer", |_, _this, _name: String| Ok(()));
-        methods.add_method("PartyPromote", |_, _this, _name: String| Ok(()));
+        // crate::parties; the scripts pass a name or an actor id.
+        methods.add_method("PartyLeave", |_, this, _: mlua::MultiValue| {
+            push(
+                &this.queue,
+                LuaCommand::PartyLeave {
+                    player_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("PartyDisband", |_, this, _: mlua::MultiValue| {
+            push(
+                &this.queue,
+                LuaCommand::PartyDisband {
+                    player_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
+        for name in ["PartyKickPlayer", "PartyOustPlayer"] {
+            methods.add_method(name, |_, this, target: mlua::Value| {
+                if let Some(target) = party_target(&target) {
+                    push(
+                        &this.queue,
+                        LuaCommand::PartyKick {
+                            player_id: this.snapshot.actor_id,
+                            target,
+                        },
+                    );
+                }
+                Ok(())
+            });
+        }
+        methods.add_method("PartyPromote", |_, this, target: mlua::Value| {
+            if let Some(target) = party_target(&target) {
+                push(
+                    &this.queue,
+                    LuaCommand::PartyPromote {
+                        player_id: this.snapshot.actor_id,
+                        target,
+                    },
+                );
+            }
+            Ok(())
+        });
         methods.add_method("RemoveFromCurrentPartyAndCleanup", |_, _this, _: ()| Ok(()));
 
         // --- Movement -------------------------------------------------------
@@ -4243,8 +4283,24 @@ impl UserData for LuaWorldManager {
         // dispatching to the right handler.
         // (DoPlayerMoveInZone is now properly bound below as a typed
         // WarpToPosition dispatch — the same-zone teleport works.)
-        for stub in [
+        // PartyInviteCommand: a name typed in, or the targeted actor's id.
+        methods.add_method(
             "CreateInvitePartyGroup",
+            |_, this, (player, target): (mlua::AnyUserData, mlua::Value)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                if let Some(target) = party_target(&target) {
+                    push(
+                        &this.queue,
+                        LuaCommand::PartyInvite {
+                            player_id: p.snapshot.actor_id,
+                            target,
+                        },
+                    );
+                }
+                Ok(())
+            },
+        );
+        for stub in [
             "CreateTradeGroup",
             "AcceptTrade",
             "CancelTrade",
@@ -6246,5 +6302,15 @@ impl UserData for LuaRegionalLeveResolver {
                 Ok(tbl)
             },
         );
+    }
+}
+
+/// A party command's target: a name, or an actor id from the target menu.
+fn party_target(v: &mlua::Value) -> Option<String> {
+    match v {
+        mlua::Value::String(s) => s.to_str().ok().map(|s| s.to_string()),
+        mlua::Value::Integer(i) => Some(i.to_string()),
+        mlua::Value::Number(n) => Some((*n as i64).to_string()),
+        _ => None,
     }
 }

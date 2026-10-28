@@ -588,10 +588,15 @@ pub fn build_create_named_group_multiple(
     SubPacket::new(OP_CREATE_NAMED_GROUP_MULTIPLE, source_actor_id, data)
 }
 
-/// 0x0143 DeleteGroupPacket.
+/// 0x0143 DeleteGroupPacket: u64 3, the group id, u64 0, the group id
+/// again (Meteor `DeleteGroupPacket`). With the id alone at offset 0 the
+/// client deleted nothing, so invitations, replaced party lists and
+/// disbanded linkshells stayed on it.
 pub fn build_delete_group(source_actor_id: u32, group_id: u64) -> SubPacket {
     let mut data = body(0x40);
-    data[..8].copy_from_slice(&group_id.to_le_bytes());
+    data[..8].copy_from_slice(&3u64.to_le_bytes());
+    data[8..16].copy_from_slice(&group_id.to_le_bytes());
+    data[24..32].copy_from_slice(&group_id.to_le_bytes());
     SubPacket::new(OP_DELETE_GROUP, source_actor_id, data)
 }
 
@@ -1434,5 +1439,20 @@ mod tests {
         let name_bytes = &pkt.data[0x16..0x38];
         assert_eq!(name_bytes.len(), 34);
         assert!(name_bytes.iter().all(|b| *b == b'A'));
+    }
+}
+
+#[cfg(test)]
+mod delete_group_tests {
+    use super::*;
+
+    #[test]
+    fn delete_group_matches_meteor_layout() {
+        let p = build_delete_group(1, 0x8000_4C52_0000_0001);
+        assert_eq!(p.data.len(), 0x20);
+        assert_eq!(&p.data[..8], &3u64.to_le_bytes());
+        assert_eq!(&p.data[8..16], &0x8000_4C52_0000_0001u64.to_le_bytes());
+        assert_eq!(&p.data[16..24], &[0; 8]);
+        assert_eq!(&p.data[24..32], &0x8000_4C52_0000_0001u64.to_le_bytes());
     }
 }

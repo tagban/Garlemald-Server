@@ -716,6 +716,26 @@ pub enum LuaCommand {
         member: String,
         rank: u8,
     },
+    /// The party commands (crate::parties). `target` is a character name
+    /// or, from the target menu, an actor id.
+    PartyInvite {
+        player_id: u32,
+        target: String,
+    },
+    PartyLeave {
+        player_id: u32,
+    },
+    PartyDisband {
+        player_id: u32,
+    },
+    PartyKick {
+        player_id: u32,
+        target: String,
+    },
+    PartyPromote {
+        player_id: u32,
+        target: String,
+    },
     /// `WorldManager:GroupInviteResult(player, groupType, result)`
     /// (ConfirmGroupCommand): 1 accept, 2 decline.
     GroupInviteResult {

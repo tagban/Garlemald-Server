@@ -342,7 +342,27 @@ pub async fn apply_runtime_lua_command(
                 .await;
             true
         }
-        // 0x2712: a linkshell offer; party offers (0x2711) aren't handled here yet
+        LC::PartyInvite { player_id, target } => {
+            crate::parties::invite(registry, world, db, player_id, &target).await;
+            true
+        }
+        LC::PartyLeave { player_id } => {
+            crate::parties::leave(registry, world, db, player_id).await;
+            true
+        }
+        LC::PartyDisband { player_id } => {
+            crate::parties::disband(registry, world, player_id).await;
+            true
+        }
+        LC::PartyKick { player_id, target } => {
+            crate::parties::kick(registry, world, db, player_id, &target).await;
+            true
+        }
+        LC::PartyPromote { player_id, target } => {
+            crate::parties::promote(registry, world, db, player_id, &target).await;
+            true
+        }
+        // 0x2711 a party offer, 0x2712 a linkshell one
         LC::GroupInviteResult {
             player_id,
             group_type,
@@ -350,6 +370,8 @@ pub async fn apply_runtime_lua_command(
         } => {
             if group_type == 0x2712 {
                 crate::linkshells::invite_result(registry, world, db, player_id, result).await;
+            } else if group_type == crate::parties::INVITE_COMMAND_PARTY {
+                crate::parties::invite_result(registry, world, db, player_id, result).await;
             } else {
                 tracing::info!(
                     player = player_id,
@@ -1269,19 +1291,18 @@ pub(crate) async fn apply_party_add_member_roster(
 /// wire half of `currentParty:AddMember`. Shared by the runtime drain
 /// (one emission per batch), the processor's content-area partition
 /// loop, and the single-command applier.
+///
+/// The roster is the player's party (crate::parties) and then the content
+/// allies. Returns the group id sent and the roster size.
 pub(crate) async fn emit_party_group_trio(
     leader_actor_id: u32,
     registry: &ActorRegistry,
     world: &WorldManager,
-) {
-    let Some(leader_handle) = registry.get(leader_actor_id).await else {
-        return;
-    };
+) -> Option<(u64, usize)> {
+    let leader_handle = registry.get(leader_actor_id).await?;
     let session_id = leader_handle.session_id;
-    let Some(snap) = world.session(session_id).await else {
-        return;
-    };
-    let roster_ids: Vec<u32> = snap.transient_party_members.clone();
+    let snap = world.session(session_id).await?;
+    let roster_ids = crate::parties::roster(leader_actor_id, &snap.transient_party_members);
     let composition_ordinal = snap.party_group_ordinal;
 
     // Build the roster: leader first, then the transient members.
@@ -1328,11 +1349,15 @@ pub(crate) async fn emit_party_group_trio(
     // login id; multi-member compositions get a NEW id keyed by the
     // session ordinal — see `party_group_index`'s doc for the retail
     // evidence).
-    let group_index = crate::packets::send::groups::party_group_index(
-        leader_actor_id,
-        members.len(),
-        composition_ordinal,
-    );
+    let group_index = crate::parties::solo_group(leader_actor_id)
+        .filter(|_| members.len() <= 1)
+        .unwrap_or_else(|| {
+            crate::packets::send::groups::party_group_index(
+                leader_actor_id,
+                members.len(),
+                composition_ordinal,
+            )
+        });
     let location_code = leader_handle.zone_id as u64;
     let sequence_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1378,7 +1403,7 @@ pub(crate) async fn emit_party_group_trio(
             session = session_id,
             "PartyAddMember: roster updated but client gone — wire emit skipped",
         );
-        return;
+        return None;
     };
     for mut sub in pkts {
         sub.set_target_id(session_id);
@@ -1391,6 +1416,7 @@ pub(crate) async fn emit_party_group_trio(
         group_index = format!("0x{group_index:016X}"),
         "party group trio emitted for current roster",
     );
+    Some((group_index, members.len()))
 }
 
 /// `currentParty:AddMember(actor)` — single-command path: roster update

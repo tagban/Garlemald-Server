@@ -40,9 +40,10 @@ use crate::packets::opcodes::{
     OP_RX_FAQ_BODY_REQUEST, OP_RX_FAQ_LIST_REQUEST, OP_RX_FRIEND_STATUS, OP_RX_FRIENDLIST_ADD,
     OP_RX_FRIENDLIST_REMOVE, OP_RX_FRIENDLIST_REQUEST, OP_RX_GM_TICKET_BODY, OP_RX_GM_TICKET_END,
     OP_RX_GM_TICKET_SEND, OP_RX_GM_TICKET_STATE, OP_RX_GROUP_CREATED, OP_RX_ITEM_PACKAGE_REQUEST,
-    OP_RX_LANGUAGE_CODE, OP_RX_LOCK_TARGET, OP_RX_RECRUITER_STATE, OP_RX_RECRUITING_DETAILS,
-    OP_RX_SET_TARGET, OP_RX_START_RECRUITING, OP_RX_SUPPORT_ISSUE_REQUEST,
-    OP_RX_UPDATE_PLAYER_POSITION, OP_RX_ZONE_IN_COMPLETE, OP_SESSION_BEGIN, OP_SESSION_END,
+    OP_RX_LANGUAGE_CODE, OP_RX_LOCK_TARGET, OP_RX_PARTY_CHAT, OP_RX_RECRUITER_STATE,
+    OP_RX_RECRUITING_DETAILS, OP_RX_SET_TARGET, OP_RX_START_RECRUITING,
+    OP_RX_SUPPORT_ISSUE_REQUEST, OP_RX_UPDATE_PLAYER_POSITION, OP_RX_ZONE_IN_COMPLETE,
+    OP_SESSION_BEGIN, OP_SESSION_END,
 };
 use crate::packets::receive::{
     AchievementProgressRequestPacket, AddRemoveSocialPacket, ChatMessagePacket, EventStartPacket,
@@ -661,6 +662,7 @@ impl PacketProcessor {
         crate::gm_tags::set(session_id, false);
         if let Some(handle) = self.registry.by_session(session_id).await {
             self.world.detach_player(handle.actor_id, session_id).await;
+            crate::parties::on_logout(&self.registry, &self.world, &self.db, handle.actor_id).await;
         }
         self.registry.remove_session(session_id).await;
         self.world.remove_session(session_id).await;
@@ -7501,6 +7503,18 @@ impl PacketProcessor {
                     }
                 }
             }
+            OP_RX_PARTY_CHAT => {
+                if sub.data.len() > 4
+                    && let Some(h) = self.registry.by_session(source).await
+                {
+                    let tail = &sub.data[4..sub.data.len().min(4 + 0x200)];
+                    let end = tail.iter().position(|&b| b == 0).unwrap_or(tail.len());
+                    let message = String::from_utf8_lossy(&tail[..end]).into_owned();
+                    let name = h.character.read().await.base.display_name().to_string();
+                    crate::parties::chat(&self.registry, &self.world, h.actor_id, &name, &message)
+                        .await;
+                }
+            }
             OP_RX_GROUP_CREATED => {
                 // 270 events/session — highest-volume IN gap. Same
                 // opcode as outbound GenericData. Client signals it
@@ -7611,6 +7625,43 @@ impl PacketProcessor {
                         group_id,
                     )
                     .await;
+                    return Ok(());
+                }
+                // An invitation (party or linkpearl offer): who offers what.
+                if event_name == "/_init"
+                    && let Some(h) = self.registry.by_session(source).await
+                    && (crate::parties::answer_relation_created(
+                        &self.world,
+                        h.actor_id,
+                        source,
+                        group_id,
+                    )
+                    .await
+                        || crate::linkshells::answer_relation_created(
+                            &self.world,
+                            h.actor_id,
+                            source,
+                            group_id,
+                        )
+                        .await)
+                {
+                    return Ok(());
+                }
+                // The player's party list: who leads it (Meteor
+                // `Party.SendInitWorkValues`, crate::parties). Without
+                // it the client doesn't know its own party's leader and
+                // keeps the invite command greyed out.
+                if event_name == "/_init"
+                    && let Some(h) = self.registry.by_session(source).await
+                    && crate::parties::is_party_group(h.actor_id, group_id)
+                {
+                    let mut sub = crate::parties::owner_packet(
+                        h.actor_id,
+                        group_id,
+                        crate::parties::leader_of(h.actor_id),
+                    );
+                    sub.set_target_id(source);
+                    client.send_bytes(sub.to_bytes()).await;
                     return Ok(());
                 }
                 let high = (group_id >> 32) as u32;
@@ -10115,9 +10166,14 @@ impl PacketProcessor {
                 }
             }
             ChatKind::Party => {
-                // Party chat — the fan-out target is determined by the
-                // player's cached party roster (Phase 6 scaffolding).
-                tracing::debug!(session = session_id, kind = ?kind, "group chat (party-roster wiring pending)");
+                crate::parties::chat(
+                    &self.registry,
+                    &self.world,
+                    handle.actor_id,
+                    &sender_name,
+                    &pkt.message,
+                )
+                .await;
             }
             _ => {}
         }
