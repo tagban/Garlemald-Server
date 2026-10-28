@@ -38,6 +38,7 @@ mod achievement;
 mod actor;
 mod autotranslate;
 mod battle;
+mod bug_report;
 mod command_actors;
 mod command_permissions;
 mod command_processor;

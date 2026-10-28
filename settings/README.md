@@ -72,6 +72,7 @@ camp = 0
 
 | Command | Does |
 | --- | --- |
+| `!bug <what happened>` | Everyone, with the `bugreport` module on: file a bug report with your place (and the client's screenshot and logs); see [modules/bugreport](../modules/bugreport/) |
 | `!pos [name]` | Where someone is: zone, coordinates, and the `!warp` that comes back there |
 | `!endevent [name]` | Free someone held by a conversation, cutscene or menu |
 | `!zone <zone id or name> [name]` | To a zone's spawn point, or beside its aetheryte (`!zone central shroud`, `!zone 155`, `!zone mordion`) |

@@ -28,6 +28,7 @@
 use anyhow::Result;
 use clap::Parser;
 
+mod bug_reports;
 mod config;
 mod database;
 mod handlers;

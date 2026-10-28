@@ -41,6 +41,8 @@ pub struct AppState {
     pub session_hours: u32,
     /// The world's name, for the status module.
     pub world_name: String,
+    /// settings/bugreport.toml, for the bugreport module.
+    pub bug_reports: Arc<common::bug_reports::Settings>,
 }
 
 const USERNAME_MIN: usize = 3;
