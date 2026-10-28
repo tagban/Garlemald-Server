@@ -4185,7 +4185,7 @@ impl Database {
             .call_db(move |c| {
                 let v: Option<u32> = c
                     .query_row(
-                        "SELECT id FROM characters WHERE name = :n",
+                        "SELECT id FROM characters WHERE name = :n COLLATE NOCASE",
                         named_params! { ":n": name },
                         |r| r.get(0),
                     )

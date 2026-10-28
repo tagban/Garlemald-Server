@@ -410,6 +410,23 @@ pub(crate) async fn tell(
     send(world, h.session_id, vec![pkt]).await;
 }
 
+/// A plain system line to `chara_id`. The linkshell texts that carry the
+/// linkshell's name (25131, 25151, 25157, 25284) show it empty with
+/// Meteor's params ("You join “.”"), so those lines go this way instead.
+async fn say(world: &WorldManager, registry: &ActorRegistry, chara_id: u32, line: &str) {
+    let Some(h) = registry.get(chara_id).await else {
+        return;
+    };
+    let sub = crate::packets::send::misc::build_send_message(
+        h.session_id,
+        h.session_id,
+        crate::social::chat::CHAT_SYSTEM,
+        "",
+        line,
+    );
+    send(world, h.session_id, vec![sub]).await;
+}
+
 pub(crate) async fn name_of(db: &Database, chara_id: u32) -> String {
     db.character_name(chara_id)
         .await
@@ -621,14 +638,12 @@ pub async fn invite(
         ],
     )
     .await;
-    tell(
-        world,
-        registry,
-        inviter,
-        25151,
-        vec![LuaParam::Int32(1), LuaParam::Nil, LuaParam::Actor(invitee)],
-    )
-    .await;
+    let line = format!(
+        "You offer {} a linkpearl from the linkshell “{}.”",
+        name_of(db, invitee).await,
+        ls.1
+    );
+    say(world, registry, inviter, &line).await;
     tracing::info!(inviter, invitee, linkshell = %ls.1, "linkpearl offered");
 }
 
@@ -706,29 +721,13 @@ pub async fn invite_result(
     let joiner = name_of(db, invitee).await;
     for (member, _, _) in db.linkshell_members(ls.0).await.unwrap_or_default() {
         if member == invitee {
-            tell(
-                world,
-                registry,
-                member,
-                25157,
-                vec![
-                    LuaParam::Int32(0),
-                    LuaParam::Actor(invitee),
-                    LuaParam::String(ls.1.clone()),
-                ],
-            )
-            .await;
+            say(world, registry, member, &format!("You join “{}.”", ls.1)).await;
         } else {
-            tell(
+            say(
                 world,
                 registry,
                 member,
-                25284,
-                vec![
-                    LuaParam::Int32(0),
-                    LuaParam::String(joiner.clone()),
-                    LuaParam::String(ls.1.clone()),
-                ],
+                &format!("{joiner} joins “{}.”", ls.1),
             )
             .await;
         }
@@ -780,14 +779,8 @@ pub async fn change_active(
                 vec![tx::build_set_active_linkshell(h.actor_id, group_id(ls.0))],
             )
             .await;
-            tell(
-                world,
-                registry,
-                chara_id,
-                25131,
-                vec![LuaParam::Int32(1), LuaParam::String(ls.1.clone())],
-            )
-            .await;
+            let line = format!("Active linkshell changed to “{}.”", ls.1);
+            say(world, registry, chara_id, &line).await;
         }
         None => {
             tell(
