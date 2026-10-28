@@ -42,7 +42,7 @@ use crate::packets::opcodes::{
     OP_RX_GM_TICKET_SEND, OP_RX_GM_TICKET_STATE, OP_RX_GROUP_CREATED, OP_RX_ITEM_PACKAGE_REQUEST,
     OP_RX_LANGUAGE_CODE, OP_RX_LOCK_TARGET, OP_RX_PARTY_CHAT, OP_RX_RECRUITER_STATE,
     OP_RX_RECRUITING_DETAILS, OP_RX_SET_TARGET, OP_RX_START_RECRUITING,
-    OP_RX_SUPPORT_ISSUE_REQUEST, OP_RX_UPDATE_PLAYER_POSITION, OP_RX_ZONE_IN_COMPLETE,
+    OP_RX_SUPPORT_ISSUE_REQUEST, OP_RX_TELL, OP_RX_UPDATE_PLAYER_POSITION, OP_RX_ZONE_IN_COMPLETE,
     OP_SESSION_BEGIN, OP_SESSION_END,
 };
 use crate::packets::receive::{
@@ -62,6 +62,31 @@ mod equip;
 pub(crate) mod gm_spawn;
 mod items;
 mod quest_offers;
+
+/// `OP_RX_PARTY_CHAT`'s first u32 for linkshell chat (`/l`).
+const GROUP_CHAT_LINKSHELL: u32 = 109;
+
+/// `OP_RX_PARTY_CHAT`'s body: the channel u32, then the message in up to
+/// 0x200 bytes. None when the message is empty.
+fn parse_group_chat(data: &[u8]) -> Option<(u32, String)> {
+    let channel = u32::from_le_bytes(data.get(..4)?.try_into().ok()?);
+    let tail = &data[4..data.len().min(4 + 0x200)];
+    let end = tail.iter().position(|&b| b == 0).unwrap_or(tail.len());
+    let message = String::from_utf8_lossy(&tail[..end]).into_owned();
+    (!message.is_empty()).then_some((channel, message))
+}
+
+/// `OP_RX_TELL`'s body: the recipient's name in 0x20 bytes, then the
+/// message in up to 0x200. None when either is empty.
+fn parse_tell(data: &[u8]) -> Option<(String, String)> {
+    let field = |b: &[u8]| {
+        let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+        String::from_utf8_lossy(&b[..end]).trim().to_string()
+    };
+    let to = field(data.get(..0x20)?);
+    let message = field(&data[0x20..data.len().min(0x220)]);
+    (!to.is_empty() && !message.is_empty()).then_some((to, message))
+}
 
 /// Read a null-terminated ASCII string out of a fixed-size byte slice.
 /// Used by the retail-IN dispatch arms (`OP_RX_DATA_REQUEST`,
@@ -7503,18 +7528,8 @@ impl PacketProcessor {
                     }
                 }
             }
-            OP_RX_PARTY_CHAT => {
-                if sub.data.len() > 4
-                    && let Some(h) = self.registry.by_session(source).await
-                {
-                    let tail = &sub.data[4..sub.data.len().min(4 + 0x200)];
-                    let end = tail.iter().position(|&b| b == 0).unwrap_or(tail.len());
-                    let message = String::from_utf8_lossy(&tail[..end]).into_owned();
-                    let name = h.character.read().await.base.display_name().to_string();
-                    crate::parties::chat(&self.registry, &self.world, h.actor_id, &name, &message)
-                        .await;
-                }
-            }
+            OP_RX_PARTY_CHAT => self.handle_group_chat(source, &sub.data).await,
+            OP_RX_TELL => self.handle_tell(source, &sub.data).await,
             OP_RX_GROUP_CREATED => {
                 // 270 events/session — highest-volume IN gap. Same
                 // opcode as outbound GenericData. Client signals it
@@ -10183,6 +10198,94 @@ impl PacketProcessor {
         Ok(())
     }
 
+    /// Party and linkshell chat (`OP_RX_PARTY_CHAT`): a u32, then the
+    /// message. The client sends 109 there for `/l` and 0x3F3E for `/p`
+    /// (seen from two clients, either linkshell); Meteor read the u32 as an
+    /// actor id and only had party chat.
+    async fn handle_group_chat(&self, session_id: u32, data: &[u8]) {
+        let Some((channel, message)) = parse_group_chat(data) else {
+            return;
+        };
+        let Some(h) = self.registry.by_session(session_id).await else {
+            return;
+        };
+        let name = h.character.read().await.base.display_name().to_string();
+        if channel != GROUP_CHAT_LINKSHELL {
+            crate::parties::chat(&self.registry, &self.world, h.actor_id, &name, &message).await;
+            return;
+        }
+        let active = self
+            .db
+            .active_linkshell(h.actor_id)
+            .await
+            .unwrap_or_default();
+        match self.db.linkshell_by_name(&active).await {
+            Ok(Some(ls)) if !active.is_empty() => {
+                let e = SocialEvent::ChatLinkshell {
+                    source_actor_id: h.actor_id,
+                    linkshell_id: ls.0,
+                    sender_name: name,
+                    message,
+                };
+                dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
+            }
+            _ => tracing::debug!(
+                session = session_id,
+                "linkshell chat with no active linkshell"
+            ),
+        }
+    }
+
+    /// A tell (`OP_RX_TELL`): the recipient's name, then the message. The
+    /// sender's client already shows its own copy; the recipient gets it as
+    /// a tell from the sender, or the sender hears the name isn't online.
+    async fn handle_tell(&self, session_id: u32, data: &[u8]) {
+        let Some((to, message)) = parse_tell(data) else {
+            return;
+        };
+        let Some(handle) = self.registry.by_session(session_id).await else {
+            return;
+        };
+        let jailed = matches!(self.db.jail_of_character(session_id).await, Ok(Some(_)));
+        let target = match self.db.character_id_by_name(&to).await {
+            Ok(Some(id)) => self.registry.by_session(id).await.filter(|h| h.is_player()),
+            _ => None,
+        };
+        let mut ob = SocialOutbox::new();
+        match target {
+            _ if jailed => ob.push(SocialEvent::ChatSystemToPlayer {
+                target_actor_id: handle.actor_id,
+                kind: ChatKind::SystemError,
+                message:
+                    "You are in Mordion Gaol: only /say reaches anyone until a GM releases you."
+                        .into(),
+            }),
+            Some(t) => {
+                let sender_name = handle
+                    .character
+                    .read()
+                    .await
+                    .base
+                    .display_name()
+                    .to_string();
+                ob.push(SocialEvent::ChatTell {
+                    source_actor_id: handle.actor_id,
+                    target_actor_id: t.actor_id,
+                    sender_name,
+                    message,
+                });
+            }
+            None => ob.push(SocialEvent::ChatSystemToPlayer {
+                target_actor_id: handle.actor_id,
+                kind: ChatKind::SystemError,
+                message: format!("{to} is not online."),
+            }),
+        }
+        for e in ob.drain() {
+            dispatch_social_event(&e, &self.registry, &self.world, &self.db).await;
+        }
+    }
+
     async fn handle_blacklist_add(&self, session_id: u32, data: &[u8]) -> Result<()> {
         let Ok(pkt) = AddRemoveSocialPacket::parse(data) else {
             return Ok(());
@@ -10864,5 +10967,44 @@ mod retail_in_dispatch_tests {
     #[test]
     fn extract_null_terminated_empty() {
         assert_eq!(extract_null_terminated_ascii(&[]), "");
+    }
+}
+
+#[cfg(test)]
+mod tell_tests {
+    use super::parse_tell;
+
+    fn body(to: &str, msg: &str) -> Vec<u8> {
+        let mut d = vec![0u8; 0x220];
+        d[..to.len()].copy_from_slice(to.as_bytes());
+        d[0x20..0x20 + msg.len()].copy_from_slice(msg.as_bytes());
+        d
+    }
+
+    #[test]
+    fn reads_name_then_message() {
+        let d = body("Bossfasd Fight", "hello there");
+        assert_eq!(
+            parse_tell(&d),
+            Some(("Bossfasd Fight".to_string(), "hello there".to_string()))
+        );
+    }
+
+    #[test]
+    fn group_chat_channel_and_message() {
+        let mut d = vec![0u8; 4 + 0x200];
+        d[..4].copy_from_slice(&109u32.to_le_bytes());
+        d[4..8].copy_from_slice(b"hey!");
+        assert_eq!(super::parse_group_chat(&d), Some((109, "hey!".to_string())));
+        d[..4].copy_from_slice(&0x3F3Eu32.to_le_bytes());
+        assert_eq!(super::parse_group_chat(&d).map(|c| c.0), Some(0x3F3E));
+        assert_eq!(super::parse_group_chat(&[1, 0, 0, 0]), None);
+    }
+
+    #[test]
+    fn empty_or_short_is_none() {
+        assert_eq!(parse_tell(&body("Bossfasd Fight", "")), None);
+        assert_eq!(parse_tell(&body("", "hi")), None);
+        assert_eq!(parse_tell(&[0u8; 8]), None);
     }
 }
