@@ -336,12 +336,26 @@ pub fn build_set_actor_state(actor_id: u32, main_state: u8, sub_state: u8) -> Su
 /// 0x013D SetActorNamePacket — custom display name override. Size 0x19 per
 /// C# to avoid overwriting the trailing flag byte.
 pub fn build_set_actor_name(actor_id: u32, display_name_id: u32, custom_name: &str) -> SubPacket {
+    build_set_actor_name_sexed(actor_id, display_name_id, custom_name, false)
+}
+
+/// 0x013D with the trailing sex word (0 = male, 1 = female) at 0x24,
+/// after the 0x20-byte name field. The client uses it to pick
+/// "he"/"she" in dialog. Meteor's `SetActorNamePacket` wrote it for
+/// players; the port dropped it, so every player read as male.
+pub fn build_set_actor_name_sexed(
+    actor_id: u32,
+    display_name_id: u32,
+    custom_name: &str,
+    female: bool,
+) -> SubPacket {
     let mut data = body(0x48);
     let mut c = Cursor::new(&mut data[..]);
     c.write_u32::<LittleEndian>(display_name_id).unwrap();
     let bytes = custom_name.as_bytes();
     let n = bytes.len().min(0x19);
     c.write_all(&bytes[..n]).unwrap();
+    data[0x24..0x28].copy_from_slice(&u32::from(female).to_le_bytes());
     SubPacket::new(OP_SET_ACTOR_NAME, actor_id, data)
 }
 
@@ -1140,6 +1154,14 @@ pub fn build_other_player_property_init(
 ) -> Vec<SubPacket> {
     let mut b = ActorPropertyPacketBuilder::new(actor_id, "/_init");
     b.add_float("charaWork.battleSave.potencial", 1.0);
+    // The nameplate and targeting flags the player's own init carries
+    // (see `build_player_property_init`): without them another player
+    // stands there with no nameplate and can't be clicked or targeted.
+    // Kodama's networked-player init sends the same slots.
+    b.add_byte("charaWork.property[0]", 1);
+    b.add_byte("charaWork.property[1]", 1);
+    b.add_byte("charaWork.property[2]", 1);
+    b.add_byte("charaWork.property[4]", 1);
     b.add_short("charaWork.parameterSave.hp[0]", hp);
     b.add_short("charaWork.parameterSave.hpMax[0]", hp_max);
     b.add_short("charaWork.parameterSave.mp", mp);
@@ -1149,7 +1171,10 @@ pub fn build_other_player_property_init(
         b.add_byte("charaWork.parameterSave.state_mainSkill[0]", main_skill);
     }
     // A SHORT on the wire, as in the player and NPC dumps.
-    b.add_short("charaWork.parameterSave.state_mainSkillLevel", main_skill_level.max(1));
+    b.add_short(
+        "charaWork.parameterSave.state_mainSkillLevel",
+        main_skill_level.max(1),
+    );
     b.done()
 }
 
@@ -1752,5 +1777,26 @@ mod player_property_init_tests {
                 .any(|w| w == category_off),
             "empty slot must emit commandCategory[32] = 0",
         );
+    }
+}
+
+#[cfg(test)]
+mod actor_name_sex_tests {
+    use super::*;
+
+    #[test]
+    fn sex_word_follows_name_field() {
+        let female = build_set_actor_name_sexed(7, 0, "Questria Redwind", true);
+        let male = build_set_actor_name(7, 0, "Questria Redwind");
+        assert_eq!(&female.data[0x24..0x28], &[1, 0, 0, 0]);
+        assert_eq!(&male.data[0x24..0x28], &[0, 0, 0, 0]);
+        assert_eq!(&female.data[4..20], b"Questria Redwind");
+    }
+
+    #[test]
+    fn female_tribes() {
+        use crate::gamedata::tribe_is_female;
+        let female: Vec<u8> = (1..=15).filter(|&t| tribe_is_female(t)).collect();
+        assert_eq!(female, vec![2, 5, 7, 9, 11, 12, 13]);
     }
 }
