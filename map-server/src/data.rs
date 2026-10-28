@@ -229,6 +229,12 @@ pub struct Session {
     /// has — the fix for "NPCs only appear within 50y of a warp point".
     /// (Garlemald-Server #46 live test.)
     pub actor_instance_list: std::collections::HashSet<u32>,
+    /// Other players this client currently has spawned (kept apart from
+    /// `actor_instance_list`, whose NPC rules — add-only populace, the
+    /// warp keep-list — don't fit players who walk away and log off).
+    /// Reset by every zone-in bundle (its wipe drops them client-side);
+    /// filled and pruned by `send_instance_update`.
+    pub known_players: std::collections::HashSet<u32>,
 }
 
 /// Snapshot of a player's currently-active scripted content area.

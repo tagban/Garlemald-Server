@@ -1062,6 +1062,96 @@ pub(crate) fn push_npc_spawn(
     }
 }
 
+/// The spawn bundle for ANOTHER player, as this client sees them: Meteor
+/// `Player.GetSpawnPackets` for a requester who isn't the player (no
+/// 0x132 command registrations, no achievements, no inventory) plus the
+/// battle-state `/_init`. Two deliberate differences from Meteor:
+/// - SetActorPosition targets the actor's own id with spawn type 0
+///   (FADEIN), as every NPC spawn does here. Meteor sent target 0 and
+///   type 1 (PLAYERWAKE, the own-avatar inn wake-up); -1 is reserved
+///   for the receiving player's OWN avatar.
+/// - The ScriptBind is Meteor's non-self Player_work list:
+///   `[classPath, false, false, false, false, false, true]`.
+pub(crate) fn push_other_player_spawn(
+    subpackets: &mut Vec<common::subpacket::SubPacket>,
+    character: &crate::actor::Character,
+) {
+    let actor_id = character.base.actor_id;
+    let position = character.base.position();
+    let chara = &character.chara;
+    let active = if chara.current_job > 0 {
+        chara.current_job as usize
+    } else {
+        chara.class.max(0) as usize
+    };
+    let level = character
+        .battle_save
+        .skill_level
+        .get(active)
+        .copied()
+        .unwrap_or(1)
+        .max(1) as u16;
+    subpackets.extend([
+        tx::actor::build_add_actor(actor_id, 8),
+        tx::actor::build_set_actor_speed_default(actor_id),
+        tx::actor::build_set_actor_position(
+            actor_id,
+            actor_id as i32,
+            position.x,
+            position.y,
+            position.z,
+            character.base.rotation,
+            0,
+            false,
+        ),
+        tx::actor::build_set_actor_appearance(actor_id, chara.model_id, &chara.appearance_ids),
+        tx::actor::build_set_actor_name(
+            actor_id,
+            character.base.display_name_id,
+            character.base.display_name(),
+        ),
+        tx::handshake::build_0xf(actor_id),
+        tx::actor::build_set_actor_state(actor_id, character.base.current_main_state as u8, 0),
+        tx::actor::build_set_actor_sub_state(actor_id, 0, 0, 0, 0, 0, 0),
+        tx::actor::build_set_actor_status_all(actor_id, &[0u16; 20]),
+        tx::actor::build_set_actor_icon(actor_id, crate::gm_tags::icon(actor_id)),
+        tx::actor::build_set_actor_is_zoning(actor_id, false),
+    ]);
+    if chara.current_job != 0 {
+        subpackets.push(tx::player::build_set_current_job(actor_id, chara.current_job as u32));
+    }
+    if chara.current_title != 0 {
+        subpackets.push(tx::player::build_set_player_title(actor_id, chara.current_title));
+    }
+    use common::luaparam::LuaParam;
+    subpackets.push(tx::actor::build_actor_instantiate(
+        actor_id,
+        0,
+        0x3040,
+        &format!("_pc{:08}", actor_id),
+        "Player",
+        &[
+            LuaParam::String("/Chara/Player/Player_work".to_string()),
+            LuaParam::False,
+            LuaParam::False,
+            LuaParam::False,
+            LuaParam::False,
+            LuaParam::False,
+            LuaParam::True,
+        ],
+    ));
+    subpackets.extend(tx::actor::build_other_player_property_init(
+        actor_id,
+        chara.hp.max(0) as u16,
+        chara.max_hp.max(0) as u16,
+        chara.mp.max(0) as u16,
+        chara.max_mp.max(0) as u16,
+        chara.tp,
+        active as u8,
+        level,
+    ));
+}
+
 /// Outcome of a single `seamless_check` call. Describes what, if anything,
 /// the player's position change triggered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1587,6 +1677,48 @@ impl WorldManager {
 
     pub async fn session(&self, id: u32) -> Option<Session> {
         self.sessions.read().await.get(&id).cloned()
+    }
+
+    /// A player leaving the world (session end): take their actor out of
+    /// the zone grid — and its private area / merged partner zone — and
+    /// remove them from every client that has them spawned. Without it a
+    /// logged-off player stayed in the grid: broadcasts and range scans
+    /// kept finding the ghost.
+    pub async fn detach_player(&self, actor_id: u32, session_id: u32) {
+        let Some(session) = self.session(session_id).await else {
+            return;
+        };
+        let mut zones = vec![session.current_zone_id];
+        zones.extend(session.merged_zone_id);
+        for zone_id in zones {
+            if let Some(zone_arc) = self.zone(zone_id).await {
+                let mut z = zone_arc.write().await;
+                let mut ob = crate::zone::outbox::AreaOutbox::new();
+                z.core.remove_actor(actor_id, &mut ob);
+                if let Some(name) = &session.current_private_area_name
+                    && let Some(pa) = z
+                        .private_areas
+                        .get_mut(name)
+                        .and_then(|m| m.get_mut(&session.current_private_area_level))
+                {
+                    pa.core.remove_actor(actor_id, &mut ob);
+                }
+            }
+        }
+        let watchers: Vec<u32> = {
+            let mut sessions = self.sessions.write().await;
+            sessions
+                .iter_mut()
+                .filter_map(|(id, s)| s.known_players.remove(&actor_id).then_some(*id))
+                .collect()
+        };
+        for watcher in watchers {
+            if let Some(client) = self.client(watcher).await {
+                let mut sub = crate::packets::send::actor::build_remove_actor(actor_id);
+                sub.set_target_id(watcher);
+                client.send_bytes(sub.to_bytes()).await;
+            }
+        }
     }
 
     pub async fn remove_session(&self, id: u32) -> Option<Session> {
@@ -2923,6 +3055,9 @@ impl WorldManager {
             let mut sessions = self.sessions.write().await;
             if let Some(s) = sessions.get_mut(&session_id) {
                 s.actor_instance_list = spawned_npc_ids.iter().copied().collect();
+                // The zone-in wipe removed every other player client-side;
+                // `send_instance_update` re-spawns those still in range.
+                s.known_players.clear();
             }
         }
 
@@ -3748,6 +3883,103 @@ impl WorldManager {
         SeamlessResult::None
     }
 
+    /// Relay a player's movement (0x00CF MoveActorToPosition) to the
+    /// clients that have them spawned — Meteor's per-tick
+    /// `CreatePositionUpdatePacket` broadcast for players. Only sessions
+    /// whose `known_players` holds the mover get it: a move for an actor
+    /// the client never spawned has nothing to land on.
+    pub async fn broadcast_player_move(
+        &self,
+        actor_id: u32,
+        session_id: u32,
+        position: Vector3,
+        rotation: f32,
+        move_state: u16,
+    ) {
+        let Some(zone_id) = self.session(session_id).await.map(|s| s.current_zone_id) else {
+            return;
+        };
+        let Some(zone_arc) = self.zone(zone_id).await else {
+            return;
+        };
+        let watchers: Vec<u32> = {
+            let z = zone_arc.read().await;
+            z.core
+                .actors_around(actor_id, MONSTER_DESPAWN_RADIUS)
+                .into_iter()
+                .filter(|a| matches!(a.kind, crate::zone::area::ActorKind::Player))
+                .map(|a| a.actor_id)
+                .collect()
+        };
+        if watchers.is_empty() {
+            return;
+        }
+        let bytes = crate::packets::send::actor::build_move_actor_to_position(
+            actor_id, position.x, position.y, position.z, rotation, move_state,
+        );
+        for watcher in watchers {
+            // A player's actor id is their session id in this server.
+            let knows = self
+                .session(watcher)
+                .await
+                .is_some_and(|s| s.known_players.contains(&actor_id));
+            if !knows {
+                continue;
+            }
+            if let Some(client) = self.client(watcher).await {
+                let mut sub = bytes.clone();
+                sub.set_target_id(watcher);
+                client.send_bytes(sub.to_bytes()).await;
+            }
+        }
+    }
+
+    /// Spawn `new` other players to this client and remove `gone` ones,
+    /// keeping `session.known_players` in step.
+    async fn sync_known_players(
+        &self,
+        registry: &crate::runtime::actor_registry::ActorRegistry,
+        client: &ClientHandle,
+        session_id: u32,
+        new: &[u32],
+        gone: &[u32],
+    ) {
+        if new.is_empty() && gone.is_empty() {
+            return;
+        }
+        for id in gone {
+            let mut sub = crate::packets::send::actor::build_remove_actor(*id);
+            sub.set_target_id(session_id);
+            client.send_bytes(sub.to_bytes()).await;
+        }
+        let mut spawned = Vec::new();
+        for id in new {
+            let Some(handle) = registry.get(*id).await else {
+                continue;
+            };
+            let mut bundle = Vec::new();
+            push_other_player_spawn(&mut bundle, &*handle.character.read().await);
+            for mut sub in bundle {
+                sub.set_target_id(session_id);
+                client.send_bytes(sub.to_bytes()).await;
+            }
+            spawned.push(*id);
+        }
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&session_id) {
+            for id in gone {
+                s.known_players.remove(id);
+            }
+            s.known_players.extend(spawned.iter().copied());
+        }
+        tracing::debug!(
+            session = session_id,
+            spawned = ?spawned,
+            removed = ?gone,
+            "send_instance_update: other players",
+        );
+    }
+
     /// Continuous actor-instance update — the per-movement spawn stream
     /// (port of C# `Session.UpdateInstance` / `Player.SendInstanceUpdate`,
     /// PacketProcessor.cs:163). garlemald previously emitted populace
@@ -3816,12 +4048,14 @@ impl WorldManager {
         // NOT already have, holding the zone read-lock only for the scan.
         // The player's live grid position + region ride along for the
         // partner-zone point query below.
-        let (new_ids, far_ids, player_position, region_id, zone_name): (
+        let (new_ids, far_ids, player_position, region_id, zone_name, new_players, gone_players): (
             Vec<u32>,
             Vec<u32>,
             Option<Vector3>,
             u32,
             String,
+            Vec<u32>,
+            Vec<u32>,
         ) = {
             let z = zone_arc.read().await;
             let center = z.core.find_actor(actor_id).map(|a| a.position);
@@ -3860,6 +4094,43 @@ impl WorldManager {
                 .map(|a| a.actor_id)
                 .filter(|id| !session.actor_instance_list.contains(id))
                 .collect();
+            // Other players in range the client hasn't spawned yet (not
+            // inside content instances, which are per-party copies).
+            let players: Vec<u32> = if in_content_instance {
+                Vec::new()
+            } else {
+                z.core
+                    .actors_around(actor_id, INSTANCE_STREAM_RADIUS)
+                    .into_iter()
+                    .filter(|a| {
+                        a.actor_id != actor_id
+                            && matches!(a.kind, crate::zone::area::ActorKind::Player)
+                            && !session.known_players.contains(&a.actor_id)
+                            && center.is_none_or(|c| {
+                                let (dx, dz) = (a.position.x - c.x, a.position.z - c.z);
+                                dx * dx + dz * dz
+                                    <= INSTANCE_STREAM_RADIUS * INSTANCE_STREAM_RADIUS
+                            })
+                    })
+                    .map(|a| a.actor_id)
+                    .collect()
+            };
+            // Known players who left: logged off, changed zone, or walked
+            // past MONSTER_DESPAWN_RADIUS (the same hysteresis as monsters).
+            let gone_players: Vec<u32> = session
+                .known_players
+                .iter()
+                .copied()
+                .filter(|id| match (z.core.find_actor(*id), center) {
+                    (Some(a), Some(c)) => {
+                        let (dx, dz) = (a.position.x - c.x, a.position.z - c.z);
+                        !matches!(a.kind, crate::zone::area::ActorKind::Player)
+                            || dx * dx + dz * dz > MONSTER_DESPAWN_RADIUS * MONSTER_DESPAWN_RADIUS
+                    }
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                })
+                .collect();
             // Open-world monsters the client has that are now far away.
             // Only base-zone BattleNpcs: populace and quest NPCs stay
             // add-only (quest ENPC broadcasts and the warp keep-list
@@ -3889,8 +4160,12 @@ impl WorldManager {
                 player_pos,
                 z.core.region_id as u32,
                 z.core.zone_name.clone(),
+                players,
+                gone_players,
             )
         };
+        self.sync_known_players(registry, &client, session_id, &new_players, &gone_players)
+            .await;
 
         if !far_ids.is_empty() {
             for id in &far_ids {
