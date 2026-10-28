@@ -26,6 +26,7 @@
 pub mod bitfield;
 pub mod bitstream;
 pub mod blowfish;
+pub mod bug_reports;
 pub mod db;
 pub mod error;
 pub mod hash_table;

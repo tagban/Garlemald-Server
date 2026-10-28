@@ -10082,7 +10082,11 @@ impl PacketProcessor {
             // what the player may run: their account's GM level against
             // settings/commands.toml (crate::command_permissions)
             let level = self.db.gm_level_of_character(session_id).await.unwrap_or(0);
-            let feedback = if let Some(r) = self.gm_spawn_command(&handle, &line, level).await {
+            let feedback = if let Some(note) = crate::bug_report::note_of(&line)
+                && level >= crate::command_permissions::get().required("bug")
+            {
+                Some(crate::bug_report::file(&self.db, &handle, session_id, note).await)
+            } else if let Some(r) = self.gm_spawn_command(&handle, &line, level).await {
                 Some(match r {
                     Ok(m) => (ChatKind::System, m),
                     Err(m) => (ChatKind::SystemError, m),

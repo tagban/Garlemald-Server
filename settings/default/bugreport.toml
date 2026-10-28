@@ -1,0 +1,41 @@
+# XIVLegacy Server: player bug reports (the bugreport module, modules/bugreport),
+# shipped defaults. Don't edit this file: put what differs in
+# settings/bugreport.toml (see settings/README.md). The module is off until
+# "bugreport" is in settings/modules.toml's enabled list.
+
+# Where reports and their files are kept: <folder>/<report id>/ and, for
+# files sent before the player's !bug, <folder>/pending/<account id>/.
+folder = "./data/bug-reports"
+
+# Reports one account may file per hour.
+per_hour = 5
+
+# How long files sent by the client's bug-report key wait for the player's
+# !bug before they're dropped (minutes).
+pending_minutes = 15
+
+# Size limits for what the client sends (kilobytes): the screenshot, and
+# each log (only the end of a longer log is kept).
+max_screenshot_kb = 6144
+max_log_kb = 1024
+
+# The longest note a player can write (characters).
+max_message = 1000
+
+[github]
+# A private repository for the reports, as "owner/name". Each report becomes
+# an issue there, with its files committed under reports/<id>/. Empty: off.
+repo = ""
+# A fine-grained token with Issues and Contents (read and write) on that
+# repository only. Better kept out of files: the environment variable
+# XIVLEGACY_BUGREPORT_GITHUB_TOKEN wins over this.
+token = ""
+# Labels for the issues.
+labels = ["bug report"]
+branch = "main"
+api = "https://api.github.com"
+
+[discord]
+# A webhook of a private channel: each report goes there with its screenshot
+# (not the logs). Empty: off. XIVLEGACY_BUGREPORT_DISCORD_WEBHOOK wins over this.
+webhook = ""

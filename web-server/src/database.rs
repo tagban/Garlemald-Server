@@ -27,6 +27,27 @@ use common::db::ConnCallExt;
 use rusqlite::{OptionalExtension, named_params};
 use tokio_rusqlite::Connection;
 
+/// A filed bug report (modules/bugreport), as the publisher sees it.
+#[derive(Debug, Clone, Default)]
+pub struct BugReport {
+    pub id: i64,
+    pub user_id: i64,
+    pub character_name: String,
+    pub world: String,
+    pub zone_id: u32,
+    pub zone_name: String,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub rotation: f32,
+    pub message: String,
+    /// The attached file names, comma separated.
+    pub files: String,
+    pub created_at: i64,
+    pub github_issue: Option<String>,
+    pub discord_sent: bool,
+}
+
 pub struct Database {
     conn: Connection,
 }
@@ -104,6 +125,91 @@ impl Database {
             })
             .await?;
         Ok(row)
+    }
+
+    /// The account signed in with the unexpired session `session_id`.
+    pub async fn user_of_session(&self, session_id: &str) -> Result<Option<i64>> {
+        let session_id = session_id.to_owned();
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT userId FROM sessions WHERE id = :sid AND expiration > datetime('now')",
+                    named_params! { ":sid": session_id },
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
+            .context("session lookup")
+    }
+
+    /// Filed bug reports (modules/bugreport) still to publish whose turn has
+    /// come, oldest first.
+    pub async fn bug_reports_to_publish(
+        &self,
+        now: i64,
+        max_attempts: i64,
+    ) -> Result<Vec<BugReport>> {
+        self.conn
+            .call_db(move |c| {
+                let mut st = c.prepare(
+                    r"SELECT id, userId, characterName, world, zoneId, zoneName, posX, posY, posZ,
+                             rotation, message, files, createdAt, githubIssue, discordSent
+                      FROM module_bugreport_reports
+                      WHERE publishedAt IS NULL AND nextTryAt <= :now AND attempts < :max
+                      ORDER BY id LIMIT 5",
+                )?;
+                let rows =
+                    st.query_map(named_params! { ":now": now, ":max": max_attempts }, |r| {
+                        Ok(BugReport {
+                            id: r.get(0)?,
+                            user_id: r.get(1)?,
+                            character_name: r.get(2)?,
+                            world: r.get(3)?,
+                            zone_id: r.get(4)?,
+                            zone_name: r.get(5)?,
+                            x: r.get(6)?,
+                            y: r.get(7)?,
+                            z: r.get(8)?,
+                            rotation: r.get(9)?,
+                            message: r.get(10)?,
+                            files: r.get(11)?,
+                            created_at: r.get(12)?,
+                            github_issue: r.get(13)?,
+                            discord_sent: r.get(14)?,
+                        })
+                    })?;
+                rows.collect()
+            })
+            .await
+            .context("bug reports to publish")
+    }
+
+    /// Record a publishing attempt of report `id`: done, or tried again later.
+    pub async fn bug_report_published(
+        &self,
+        id: i64,
+        o: &crate::bug_reports::Outcome,
+        now: i64,
+    ) -> Result<()> {
+        let issue = o.issue.clone();
+        let sent = o.discord_sent;
+        let error = o.error.clone();
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    r"UPDATE module_bugreport_reports SET
+                        githubIssue = :issue, discordSent = :sent, lastError = :err,
+                        attempts = attempts + (:err IS NOT NULL),
+                        nextTryAt = CASE WHEN :err IS NULL THEN 0 ELSE :now + (60 << attempts) END,
+                        publishedAt = CASE WHEN :err IS NULL THEN :now END
+                      WHERE id = :id",
+                    named_params! { ":issue": issue, ":sent": sent, ":err": error, ":now": now, ":id": id },
+                )?;
+                Ok(())
+            })
+            .await
+            .context("bug report published")
     }
 
     /// Insert a session row with `expiration = now + hours`. The 56-char

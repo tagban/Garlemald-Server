@@ -242,6 +242,23 @@ pub struct PrivateAreaRow {
     pub bgm_battle: u16,
 }
 
+/// A player's bug report (modules/bugreport), as `!bug` files it.
+#[derive(Debug, Clone, Default)]
+pub struct BugReport {
+    pub user_id: i64,
+    pub character_id: u32,
+    pub character_name: String,
+    pub world: String,
+    pub zone_id: u32,
+    pub zone_name: String,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub rotation: f32,
+    pub message: String,
+    pub created_at: i64,
+}
+
 pub struct Database {
     conn: Connection,
 }
@@ -4265,6 +4282,69 @@ impl Database {
                 c.execute(
                     "UPDATE users SET gmTag = :t WHERE id = (SELECT userId FROM characters WHERE id = :c)",
                     named_params! { ":c": character_id, ":t": on as i64 },
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// The account `character_id` belongs to.
+    pub async fn user_of_character(&self, character_id: u32) -> Result<Option<i64>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT userId FROM characters WHERE id = :c",
+                    named_params! { ":c": character_id },
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
+    }
+
+    /// Bug reports account `user_id` has filed since `since` (unix seconds).
+    pub async fn bug_reports_since(&self, user_id: i64, since: i64) -> Result<u32> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM module_bugreport_reports WHERE userId = :u AND createdAt >= :t",
+                    named_params! { ":u": user_id, ":t": since },
+                    |r| r.get(0),
+                )
+            })
+            .await
+    }
+
+    /// Save a bug report, held back from publishing until
+    /// [`Self::ready_bug_report`]. Returns its id.
+    pub async fn insert_bug_report(&self, b: &BugReport) -> Result<i64> {
+        let b = b.clone();
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    r"INSERT INTO module_bugreport_reports(userId, characterId, characterName, world,
+                        zoneId, zoneName, posX, posY, posZ, rotation, message, createdAt, nextTryAt)
+                      VALUES(:u, :c, :n, :w, :z, :zn, :x, :y, :zz, :r, :m, :t, :held)",
+                    named_params! {
+                        ":u": b.user_id, ":c": b.character_id, ":n": b.character_name,
+                        ":w": b.world, ":z": b.zone_id, ":zn": b.zone_name, ":x": b.x, ":y": b.y,
+                        ":zz": b.z, ":r": b.rotation, ":m": b.message, ":t": b.created_at,
+                        ":held": i64::MAX,
+                    },
+                )?;
+                Ok(c.last_insert_rowid())
+            })
+            .await
+    }
+
+    /// Bug report `id` has its files (comma separated): the web server may publish it.
+    pub async fn ready_bug_report(&self, id: i64, files: &str) -> Result<()> {
+        let files = files.to_string();
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    "UPDATE module_bugreport_reports SET files = :f, nextTryAt = 0 WHERE id = :id",
+                    named_params! { ":f": files, ":id": id },
                 )?;
                 Ok(())
             })

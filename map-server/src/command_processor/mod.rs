@@ -225,6 +225,7 @@ impl CommandProcessor {
             "help",
             "who",
             "version",
+            "bug <what happened>",
             "pos [name]",
             "endevent [name]",
             "goto <name>",
@@ -294,6 +295,7 @@ impl CommandProcessor {
             .filter(|c| {
                 let name = c.split_whitespace().next().unwrap_or("");
                 (final_days || !world_end::COMMANDS.contains(&name))
+                    && (name != "bug" || crate::modules::is_enabled(common::bug_reports::MODULE))
                     && level.is_none_or(|l| l >= perms.required(name))
             })
             .copied()

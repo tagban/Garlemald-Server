@@ -19,6 +19,8 @@ target_others = 2
 help = 0
 who = 0
 version = 0
+# the bugreport module's !bug (modules/bugreport)
+bug = 0
 
 # GMs: moving players around, looking after them
 pos = 2
