@@ -1633,8 +1633,21 @@ pub(crate) async fn spawn_bundle_fanout(
     let packets = [
         tx::actor::build_add_actor(actor_id, 0).to_bytes(),
         tx::actor::build_set_actor_speed_default(actor_id).to_bytes(),
+        // Target = the actor's own id and spawn type 0 (FADEIN), as for every
+        // NPC (`send_zone_in_bundle`, Meteor `Npc.GetSpawnPackets`). The -1
+        // target is the receiving player's OWN avatar, and type 1
+        // (PLAYERWAKE) the own-avatar warp-in; neither belongs on someone
+        // else's spawn, which every nearby player got whenever another
+        // player zoned in or warped close by.
         tx::actor::build_set_actor_position(
-            actor_id, -1, position.x, position.y, position.z, rotation, 1, false,
+            actor_id,
+            actor_id as i32,
+            position.x,
+            position.y,
+            position.z,
+            rotation,
+            0,
+            false,
         )
         .to_bytes(),
         tx::actor::build_set_actor_appearance(actor_id, model_id, &appearance_ids).to_bytes(),
