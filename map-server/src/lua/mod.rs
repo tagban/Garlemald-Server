@@ -1686,6 +1686,7 @@ mod tests {
         assert_eq!(file(1_001_424).as_deref(), Some("DftWil.lua")); // Gegeissa
         assert_eq!(file(1_001_305).as_deref(), Some("DftSea.lua")); // Y'alabali
         assert_eq!(file(1_000_066).as_deref(), Some("DftFst.lua")); // Alixe
+        assert_eq!(file(1_000_460).as_deref(), Some("DftFst.lua")); // Hetzkin
         assert_eq!(file(1_280_001), None); // the Limsa aetheryte
 
         let npc_spec = LuaNpcSpec {
@@ -1729,6 +1730,56 @@ mod tests {
                         ))
             )),
             "Gegeissa's default line must be delegated; got {:?}",
+            result.commands,
+        );
+    }
+
+    /// The Hamlet breeder greets with the client's `defTalk(player)`, then
+    /// ends the event.
+    #[test]
+    fn hamlet_breeder_greets() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/lua"));
+        let engine = LuaEngine::new(root);
+        let script = engine
+            .resolver()
+            .base_class("/Chara/Npc/Populace/PopulaceHamletBreeder");
+        assert!(engine.script_defines(&script, "onEventStarted"));
+        let npc_spec = LuaNpcSpec {
+            actor_id: 0x4400_03F5,
+            name: "tsimh_panipahr".to_string(),
+            class_name: "PopulaceHamletBreeder".to_string(),
+            class_path: "/Chara/Npc/Populace/PopulaceHamletBreeder".to_string(),
+            unique_id: "tsimh_panipahr".to_string(),
+            zone_id: 129,
+            zone_name: "sea0Field02".to_string(),
+            state: 0,
+            pos: (0.0, 0.0, 0.0),
+            rotation: 0.0,
+            actor_class_id: 1_500_011,
+            quest_graphic: 0,
+        };
+        let result = engine.call_npc_on_event_started(
+            &script,
+            userdata::PlayerSnapshot {
+                actor_id: 1,
+                ..Default::default()
+            },
+            npc_spec,
+            "talkDefault".to_string(),
+            1,
+            Vec::new(),
+        );
+        assert!(
+            result.error.is_none(),
+            "breeder onEventStarted errored: {:?}",
+            result.error
+        );
+        assert!(
+            result.commands.iter().any(|c| matches!(
+                c,
+                LuaCommand::RunEventFunction { function_name, .. } if function_name == "defTalk"
+            )),
+            "the breeder must call defTalk; got {:?}",
             result.commands,
         );
     }
