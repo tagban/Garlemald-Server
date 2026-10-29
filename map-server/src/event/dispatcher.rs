@@ -450,9 +450,34 @@ async fn dispatch_npc_event_started(
     // semantics from round 2 hold on both release arms.
     let quest_claimed = owner_claimed_by_current_quest(&player_handle, actor_class_id).await;
 
-    let unique_path = lua.resolver().npc(&zone_name, &class_name, &unique_id);
+    // In a private area (the openings' past cities) the owner shares the
+    // player's area, and its override is that area's
+    // (`unique/<zone>/PrivateArea/<area>_<level>/...`), never the present
+    // day's, as in Meteor's `CallLuaFunctionNpc`. Looking only at the zone's
+    // left 50 opening NPCs mute once their quest step moved on, and gave
+    // Momodi, Miounne and ten others their present-day scripts in the past.
+    let private_area = match world.session(player_handle.session_id).await {
+        Some(s) if player_handle.session_id != 0 => s
+            .current_private_area_name
+            .filter(|n| !n.is_empty())
+            .map(|n| (n, s.current_private_area_level)),
+        _ => None,
+    };
+    let unique_path = match &private_area {
+        Some((area, level)) => {
+            lua.resolver()
+                .npc_in_private_area(&zone_name, area, *level, &class_name, &unique_id)
+        }
+        None => lua.resolver().npc(&zone_name, &class_name, &unique_id),
+    };
     let base_path = lua.resolver().base_class(&class_path);
-    if quest_claimed && unique_path.exists() {
+    // An override without its own `onEventStarted` (a blank file like
+    // sea0Town01a's limsa_aetheryte.lua, a shop salesman's stock list, a
+    // door's init) leaves the event to its base class, as Meteor's
+    // `CallLuaFunctionNpc` does; taking it whole made those owners inert, so
+    // clicking the Limsa aetheryte did nothing.
+    let unique_handles = lua.script_defines(&unique_path, "onEventStarted");
+    if quest_claimed && unique_handles {
         tracing::debug!(
             owner = owner_actor_id,
             class = actor_class_id,
@@ -460,8 +485,23 @@ async fn dispatch_npc_event_started(
             "NPC onEventStarted: unique override skipped — owner claimed by a current quest",
         );
     }
-    let script_path = if !quest_claimed && unique_path.exists() {
+    // A townsperson no quest claims, with no line of its own, says its
+    // region's default line: PopulaceStandard's own handler is deliberately
+    // empty, and the DftSea/DftFst/DftWil tables only reached the NPCs whose
+    // override delegates to them, so 106 spawned townsfolk with a line said
+    // nothing.
+    let default_talk = (!quest_claimed
+        && !unique_handles
+        && event_type == 1
+        && class_path
+            .to_ascii_lowercase()
+            .ends_with("/populacestandard"))
+    .then(|| lua.default_talk_script(actor_class_id))
+    .flatten();
+    let script_path = if !quest_claimed && unique_handles {
         unique_path
+    } else if let Some(dft) = default_talk {
+        dft
     } else if base_path.exists() {
         base_path
     } else {
@@ -1697,6 +1737,271 @@ mod tests {
             1 << 7,
             "NPC onEventStarted should have drained QuestSetFlag(7) into the live quest",
         );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A unique override that doesn't define `onEventStarted` (blank, like
+    /// sea0Town01a's limsa_aetheryte.lua, or init only) leaves the event to
+    /// the base class; one that defines it still takes it. Taking a blank
+    /// override whole released the client with nothing run, so clicking the
+    /// Limsa aetheryte did nothing.
+    #[tokio::test]
+    async fn unique_override_without_handler_falls_back_to_base_class() {
+        use crate::actor::Character;
+        use crate::actor::quest::{Quest, quest_actor_id};
+        use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+        use crate::zone::navmesh::StubNavmeshLoader;
+        use crate::zone::zone::Zone;
+
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("base/Chara/Npc/Object")).unwrap();
+        std::fs::create_dir_all(root.join("unique/test/Talker")).unwrap();
+        std::fs::write(
+            root.join("base/Chara/Npc/Object/Talker.lua"),
+            "function onEventStarted(player, npc, eventName)\n    player:GetQuest(110500):SetQuestFlag(1)\nend\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("unique/test/Talker/blank_one.lua"), "").unwrap();
+        std::fs::write(
+            root.join("unique/test/Talker/init_one.lua"),
+            "function init(npc) return false, false, 0, 0 end\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("unique/test/Talker/own_one.lua"),
+            "function onEventStarted(player, npc, eventName)\n    player:GetQuest(110500):SetQuestFlag(2)\nend\n",
+        )
+        .unwrap();
+        // an opening NPC: its present-day override and its own in the past
+        std::fs::write(
+            root.join("unique/test/Talker/past_one.lua"),
+            "function onEventStarted(player, npc, eventName)\n    player:GetQuest(110500):SetQuestFlag(2)\nend\n",
+        )
+        .unwrap();
+        let past = root.join("unique/test/PrivateArea/PrivateAreaMasterPast_2/Talker");
+        std::fs::create_dir_all(&past).unwrap();
+        std::fs::write(
+            past.join("past_one.lua"),
+            "function onEventStarted(player, npc, eventName)\n    player:GetQuest(110500):SetQuestFlag(3)\nend\n",
+        )
+        .unwrap();
+
+        let lua = Arc::new(LuaEngine::new(&root));
+        let world = WorldManager::new();
+        let registry = ActorRegistry::new();
+        let db = Database::open(tempdb()).await.expect("db stub");
+        let zone = Zone::new(
+            100,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(&StubNavmeshLoader),
+        );
+        world.register_zone(zone).await;
+
+        for (actor_id, unique_id) in [
+            (91u32, "blank_one"),
+            (92, "init_one"),
+            (93, "own_one"),
+            (94, "past_one"),
+        ] {
+            let mut npc_chara = Character::new(actor_id);
+            npc_chara.base.class_path = "Chara/Npc/Object/Talker".into();
+            npc_chara.base.class_name = "Talker".into();
+            npc_chara.base.unique_id = unique_id.into();
+            registry
+                .insert(ActorHandle::new(
+                    actor_id,
+                    ActorKindTag::Npc,
+                    100,
+                    0,
+                    npc_chara,
+                ))
+                .await;
+        }
+
+        let mut flags_after = Vec::new();
+        for (player_id, owner, area) in [
+            (55u32, 91u32, None),
+            (56, 92, None),
+            (57, 93, None),
+            (58, 94, Some("PrivateAreaMasterPast")),
+            (59, 94, None),
+        ] {
+            let mut player_chara = Character::new(player_id);
+            let mut quest = Quest::new(quest_actor_id(110_500), "TestDrain".to_string());
+            quest.clear_dirty();
+            player_chara.quest_journal.add(quest);
+            let mut session = crate::data::Session::new(player_id);
+            session.current_zone_id = 100;
+            session.current_private_area_name = area.map(str::to_string);
+            session.current_private_area_level = 2;
+            world.upsert_session(session).await;
+            let player_handle = ActorHandle::new(
+                player_id,
+                ActorKindTag::Player,
+                100,
+                player_id,
+                player_chara,
+            );
+            registry.insert(player_handle.clone()).await;
+            let event = EventEvent::EventStarted {
+                player_actor_id: player_id,
+                owner_actor_id: owner,
+                event_name: "talkDefault".to_string(),
+                event_type: 1,
+                lua_params: vec![],
+            };
+            dispatch_event_event(&event, &registry, &world, &db, Some(&lua)).await;
+            let c = player_handle.character.read().await;
+            flags_after.push(
+                c.quest_journal
+                    .get(110_500)
+                    .map(|q| q.get_flags())
+                    .unwrap_or(0),
+            );
+        }
+        assert_eq!(
+            flags_after[0],
+            1 << 1,
+            "blank override: the base class's onEventStarted runs"
+        );
+        assert_eq!(
+            flags_after[1],
+            1 << 1,
+            "init-only override: the base class's onEventStarted runs"
+        );
+        assert_eq!(
+            flags_after[2],
+            1 << 2,
+            "an override with its own onEventStarted still takes the event"
+        );
+        assert_eq!(
+            flags_after[3],
+            1 << 3,
+            "in the opening's past the private area's override runs, not the present day's"
+        );
+        assert_eq!(
+            flags_after[4],
+            1 << 2,
+            "outside a private area the zone's override runs"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A townsperson with no line of its own says its region's default line
+    /// when talked to; one without a line, or a push, stays with the base.
+    #[tokio::test]
+    async fn townsperson_without_a_line_gets_its_default_talk() {
+        use crate::actor::Character;
+        use crate::actor::quest::{Quest, quest_actor_id};
+        use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+        use crate::zone::navmesh::StubNavmeshLoader;
+        use crate::zone::zone::Zone;
+
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("base/Chara/Npc/Populace")).unwrap();
+        std::fs::create_dir_all(root.join("quests/dft")).unwrap();
+        std::fs::write(
+            root.join("base/Chara/Npc/Populace/PopulaceStandard.lua"),
+            "function onEventStarted(player, npc) end\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("quests/dft/DftSea.lua"),
+            "local lines = { [77] = \"defaultTalkWithTest_001\" }\n\
+             function HasDefaultTalk(classId) return lines[classId] ~= nil end\n\
+             function onEventStarted(player, npc, triggerName)\n    player:GetQuest(110500):SetQuestFlag(4)\nend\n",
+        )
+        .unwrap();
+
+        let lua = Arc::new(LuaEngine::new(&root));
+        let world = WorldManager::new();
+        let registry = ActorRegistry::new();
+        let db = Database::open(tempdb()).await.expect("db stub");
+        let zone = Zone::new(
+            100,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(&StubNavmeshLoader),
+        );
+        world.register_zone(zone).await;
+        for (actor_id, class_id) in [(81u32, 77u32), (82, 78)] {
+            let mut npc_chara = Character::new(actor_id);
+            npc_chara.base.class_path = "/Chara/Npc/Populace/PopulaceStandard".into();
+            npc_chara.base.class_name = "PopulaceStandard".into();
+            npc_chara.base.unique_id = format!("towns_{actor_id}");
+            npc_chara.chara.actor_class_id = class_id;
+            registry
+                .insert(ActorHandle::new(
+                    actor_id,
+                    ActorKindTag::Npc,
+                    100,
+                    0,
+                    npc_chara,
+                ))
+                .await;
+        }
+
+        let mut flags_after = Vec::new();
+        for (player_id, owner, event_type) in [(61u32, 81u32, 1u8), (62, 82, 1), (63, 81, 2)] {
+            let mut player_chara = Character::new(player_id);
+            let mut quest = Quest::new(quest_actor_id(110_500), "TestDrain".to_string());
+            quest.clear_dirty();
+            player_chara.quest_journal.add(quest);
+            let player_handle =
+                ActorHandle::new(player_id, ActorKindTag::Player, 100, 0, player_chara);
+            registry.insert(player_handle.clone()).await;
+            let event = EventEvent::EventStarted {
+                player_actor_id: player_id,
+                owner_actor_id: owner,
+                event_name: if event_type == 1 {
+                    "talkDefault"
+                } else {
+                    "pushDefault"
+                }
+                .to_string(),
+                event_type,
+                lua_params: vec![],
+            };
+            dispatch_event_event(&event, &registry, &world, &db, Some(&lua)).await;
+            let c = player_handle.character.read().await;
+            flags_after.push(
+                c.quest_journal
+                    .get(110_500)
+                    .map(|q| q.get_flags())
+                    .unwrap_or(0),
+            );
+        }
+        assert_eq!(
+            flags_after[0],
+            1 << 4,
+            "a townsperson with a default line says it"
+        );
+        assert_eq!(
+            flags_after[1], 0,
+            "one without a line stays with PopulaceStandard"
+        );
+        assert_eq!(flags_after[2], 0, "a push isn't talk");
 
         let _ = std::fs::remove_dir_all(root);
     }
