@@ -9438,8 +9438,12 @@ impl PacketProcessor {
         // lender's welcome line went out with an EndEvent in the same
         // flush and the menu never answered. PopulaceStandard NPCs keep
         // the every-quest fan-out (stub quests don't register ENPCs).
+        // Objects (/Npc/Object/: aetherytes, market entrances, …) too: with
+        // man0g1 at SEQ_010, its onTalk's tail EndEvent shut the Gridania
+        // aetheryte's menu in the same flush as eventAetheryteParentSelect,
+        // so the player could not set a home point there.
         if hook_name == "onTalk"
-            && npc_spec.class_path.contains("/Populace/")
+            && (npc_spec.class_path.contains("/Populace/") || npc_spec.class_path.contains("/Object/"))
             && !npc_spec.class_path.ends_with("/PopulaceStandard")
         {
             let registered = {
