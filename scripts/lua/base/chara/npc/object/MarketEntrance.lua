@@ -126,7 +126,7 @@ function onEventStarted(player, npc, triggerName)
             end
             
         elseif (choice == 1519 or choice == 2534 or choice == 3533) then -- Mercentile Wards
-                player:SendMessage(0x20, "", "[MarketEntrance] DEBUG: "..choice);
+                player:SendMessage(0x20, "", "The Mercantile Wards are not open on this server yet.");
         elseif (choice == 1512 or choice == 2526 or choice == 3514) then -- GC Office
                 warp = GC_ENTRANCE[choice];
                 player:SendGameMessage(player, worldMaster, 60004, 0x20, choice);
