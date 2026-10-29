@@ -97,8 +97,7 @@ function onEventStarted(player, npc, triggerName)
     local itemSearchId = 11000125;   
     
     local worldMaster = GetWorldMaster(); 
-    local pos = player:GetPos();
-    local currZone = pos[4];
+    local currZone = player:GetZoneID();
     
     if (currZone == 133 or currZone == 230 or currZone == 155 or currZone == 206 or currZone == 175 or currZone == 209) then 
         exitPlaceName = 0;  -- If in city, hide city menu option
