@@ -409,7 +409,7 @@ function onNpcLS(player, quest, from, msgStep)
 		end	
 				
 		-- Quick way to handle all msgs nicely.
-		player:SendGameMessageLocalizedDisplayName(quest, NPCLS_MSGS[msgPack][msgStep], MESSAGE_TYPE_NPC_LINKSHELL, 1000015);
+		player:SendGameMessageLocalizedDisplayName(quest, NPCLS_MSGS[msgPack][msgStep], MESSAGE_TYPE_NPC_LINKSHELL, 1300018); -- Miounne
 		if (msgStep >= #NPCLS_MSGS[msgPack]) then
 			quest:EndOfNpcLsMsgs();
 		else

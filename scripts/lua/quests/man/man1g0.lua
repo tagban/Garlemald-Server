@@ -47,12 +47,14 @@ TROUBLESOME_TOMBOY			= 1000828;
 DESERTED_DAUGHTER			= 1000827;
 PLAYGROUND_EXIT_TRIGGER		= 1090205;
 
--- West Gridania Echo + BTN
+-- Central Shroud Echo + BTN
+-- The journal marks Seq 030 and 035 on the trail by Lifemend Stump; the
+-- trigger there starts the echo (PrivateAreaMasterPast 3) with the moogle.
 BTN_TRIGGER					= 1090046;
 WEST_SHROUD_TRIGGER			= 1090067;
 PUDGY_MOOGLE				= 1000328;
-SHROUD_ECHO_TRIGGER			= 0;
 OPYLTYL						= 1000236;
+SHROUD_ECHO_EXIT			= {150, -650.0, 23.3, -1095.0, 0.6};
 
 -- ARC Guild
 NONOLATO					= 1000463;
@@ -114,8 +116,10 @@ function onStateChange(player, quest, sequence)
 		quest:SetENpc(BTN_TRIGGER, QFLAG_PUSH, false, true);
 		quest:SetENpc(MIOUNNE);
 	elseif (sequence == SEQ_030) then
+		quest:SetENpc(WEST_SHROUD_TRIGGER, QFLAG_PUSH, false, true);
 		quest:SetENpc(MIOUNNE);
 	elseif (sequence == SEQ_035) then
+		quest:SetENpc(PUDGY_MOOGLE, QFLAG_TALK);
 	elseif (sequence == SEQ_040) then
 		quest:SetENpc(OPYLTYL, QFLAG_TALK);
 	elseif (sequence == SEQ_045) then
@@ -198,7 +202,13 @@ function onTalk(player, quest, npc)
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent050_2");
 		end
 	elseif (sequence == SEQ_035) then
-		if (classId == MIOUNNE) then
+		if (classId == PUDGY_MOOGLE) then
+			callClientFunction(player, "delegateEvent", player, quest, "processEvent070");
+			player:EndEvent();
+			quest:StartSequence(SEQ_040);
+			GetWorldManager():DoZoneChange(player, SHROUD_ECHO_EXIT[1], nil, 0, 15, SHROUD_ECHO_EXIT[2], SHROUD_ECHO_EXIT[3], SHROUD_ECHO_EXIT[4], SHROUD_ECHO_EXIT[5]);
+			return;
+		elseif (classId == MIOUNNE) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent050_2");
 		end
 	elseif (sequence == SEQ_040) then
@@ -249,18 +259,19 @@ function onPush(player, quest, npc)
 		quest:StartSequence(SEQ_020);
 		GetWorldManager():DoZoneChange(player, 206, nil, 0, 15, 15.593, 8.75, -1266.0, -1.322);	
 	elseif (sequence == SEQ_020) then
-	elseif (sequence == SEQ_025) then
-		callClientFunction(player, "delegateEvent", player, quest, "processEvent050");    
+	-- Each push checks its trigger: the BTN trigger is spawned twice on one
+	-- spot, and the second push would otherwise run Seq 030's event at once.
+	elseif (sequence == SEQ_025 and classId == BTN_TRIGGER) then
+		callClientFunction(player, "delegateEvent", player, quest, "processEvent050");
 		quest:StartSequence(SEQ_030);
-	elseif (sequence == SEQ_030) then
-		-- Go to west shroud
-		callClientFunction(player, "delegateEvent", player, quest, "processEvent060");    
+	elseif (sequence == SEQ_030 and classId == WEST_SHROUD_TRIGGER) then
+		-- The echo in the Central Shroud; the moogle waits in it
+		callClientFunction(player, "delegateEvent", player, quest, "processEvent060");
+		player:EndEvent();
 		quest:StartSequence(SEQ_035);
-	elseif (sequence == SEQ_035) then
-		-- Go to moogle
-		callClientFunction(player, "delegateEvent", player, quest, "processEvent070");    
-		quest:StartSequence(SEQ_040);
-	elseif (sequence == SEQ_055) then
+		GetWorldManager():WarpToPrivateArea(player, "PrivateAreaMasterPast", 3);
+		return;
+	elseif (sequence == SEQ_055 and classId == GUILD_ARC_INSIDE_TRIGGER) then
 		callClientFunction(player, "delegateEvent", player, quest, "processEvent100"); 
 		quest:NewNpcLsMsg(1);   
 		quest:StartSequence(SEQ_060);
@@ -285,7 +296,7 @@ function onNpcLS(player, quest, from, msgStep)
 		end	
 				
 		-- Quick way to handle all msgs nicely.
-		player:SendGameMessageLocalizedDisplayName(quest, NPCLS_MSGS[msgPack][msgStep], MESSAGE_TYPE_NPC_LINKSHELL, 1000015);
+		player:SendGameMessageLocalizedDisplayName(quest, NPCLS_MSGS[msgPack][msgStep], MESSAGE_TYPE_NPC_LINKSHELL, 1300018); -- Miounne
 		if (msgStep >= #NPCLS_MSGS[msgPack]) then
 			quest:EndOfNpcLsMsgs();
 		else

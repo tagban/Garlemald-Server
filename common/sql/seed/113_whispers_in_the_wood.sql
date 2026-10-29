@@ -1,5 +1,5 @@
--- Whispers in the Wood (Man1g0, Gridania's level 8 story): the three echo
--- instances.
+-- Whispers in the Wood (Man1g0, Gridania's level 8 story): its echo
+-- instances and the triggers its later steps need.
 --
 -- The quest moves the player through Gridania's PrivateAreaMasterPast
 -- types 7 (the Carpenters' Guild in the echo), 8 (the Acorn Orchard, Fye)
@@ -13,9 +13,17 @@
 -- checked in the test client, facing it; type 9's exit (1090205) is the
 -- same leave-the-circle trigger around the arrival point.
 --
--- Fye, the girls, Zezekuta and the exit trigger ship stripped in gamedata
--- (classPath ''), which crashes the client on spawn: the people get the
--- guild NPCs' PopulaceStandard row, the exit the playground trigger's.
+-- Seq 030 and 035 are marked in the journal on the trail by Lifemend Stump
+-- in the Central Shroud (about -641, -1100 from the map's grid); Seq 055 just
+-- inside Quiver's Hold. None of their actors was spawned: the trail gets a
+-- push trigger (1090067) that starts the echo, the echo (zone 150, type 3)
+-- the Pudgy Moogle, and the guild its inside trigger (1090068). man1g0.lua
+-- enables them.
+--
+-- Fye, the girls, Zezekuta, the moogle and the three triggers ship stripped
+-- in gamedata (classPath ''), which crashes the client on spawn: the people
+-- get the guild NPCs' PopulaceStandard row, the triggers the playground
+-- trigger's.
 --
 -- Idempotent: UPDATEs guarded, INSERTs OR IGNORE on id. No schema change.
 
@@ -26,6 +34,12 @@ FROM (SELECT 7 AS type UNION ALL SELECT 8 UNION ALL SELECT 9) AS t
 WHERE NOT EXISTS (SELECT 1 FROM "server_zones_privateareas" p
                   WHERE p."parentZoneId" = 206 AND p."privateAreaName" = 'PrivateAreaMasterPast'
                     AND p."privateAreaType" = t.type);
+
+INSERT INTO "server_zones_privateareas"
+    ("parentZoneId", "className", "privateAreaName", "privateAreaType", "dayMusic", "nightMusic", "battleMusic")
+SELECT 150, '/Area/PrivateArea/PrivateAreaMasterPast', 'PrivateAreaMasterPast', 3, 0, 0, 0
+WHERE NOT EXISTS (SELECT 1 FROM "server_zones_privateareas"
+                  WHERE "parentZoneId" = 150 AND "privateAreaName" = 'PrivateAreaMasterPast' AND "privateAreaType" = 3);
 
 UPDATE "gamedata_actor_class" SET
     "classPath" = '/Chara/Npc/Populace/PopulaceStandard',
@@ -49,6 +63,7 @@ UPDATE "gamedata_actor_class" SET
 WHERE "id" IN (
     1000014, -- Fye
     1000240, -- Zezekuta
+    1000328, -- Pudgy Moogle
     1000827, -- Deserted Daughter
     1000828  -- Troublesome Tomboy
 ) AND ("classPath" = '' OR "classPath" IS NULL);
@@ -69,6 +84,38 @@ UPDATE "gamedata_actor_class" SET
 }'
 WHERE "id" = 1090205 AND ("classPath" = '' OR "classPath" IS NULL);
 
+UPDATE "gamedata_actor_class" SET
+    "classPath" = '/Chara/Npc/Populace/PopulaceStandard',
+    "propertyFlags" = 1,
+    "eventConditions" = '{
+  "pushWithCircleEventConditions": [
+    {
+      "isEnabled": "false",
+      "radius": "5.0",
+      "outwards": "false",
+      "silent": "false",
+      "conditionName": "pushDefault"
+    }
+  ]
+}'
+WHERE "id" = 1090067 AND ("classPath" = '' OR "classPath" IS NULL);
+
+UPDATE "gamedata_actor_class" SET
+    "classPath" = '/Chara/Npc/Populace/PopulaceStandard',
+    "propertyFlags" = 1,
+    "eventConditions" = '{
+  "pushWithCircleEventConditions": [
+    {
+      "isEnabled": "false",
+      "radius": "3.0",
+      "outwards": "false",
+      "silent": "false",
+      "conditionName": "pushDefault"
+    }
+  ]
+}'
+WHERE "id" = 1090068 AND ("classPath" = '' OR "classPath" IS NULL);
+
 INSERT OR IGNORE INTO "server_spawn_locations"
     ("id", "actorClassId", "uniqueId", "zoneId", "privateAreaName", "privateAreaLevel",
      "positionX", "positionY", "positionZ", "rotation", "actorState", "animationId", "customDisplayName")
@@ -86,4 +133,7 @@ VALUES
     (27598, 1000827, 'man1g0_8_deserted_daughter', 206, 'PrivateAreaMasterPast', 8,   -34.47,  8.11,  -1245.13, -2.95, 0, 0, null),
     (27599, 1000828, 'man1g0_9_troublesome_tomboy', 206, 'PrivateAreaMasterPast', 9,   -31.00,  7.82,  -1250.16, -1.57, 0, 0, null),
     (27600, 1000827, 'man1g0_9_deserted_daughter', 206, 'PrivateAreaMasterPast', 9,   -34.47,  8.11,  -1245.13, -2.95, 0, 0, null),
-    (27601, 1090205, 'man1g0_9_playground_exit', 206, 'PrivateAreaMasterPast', 9,   -35.45,  7.90,  -1250.15,  0.00, 0, 0, null); -- leave the orchard (15 yalms) back to the guild
+    (27601, 1090205, 'man1g0_9_playground_exit', 206, 'PrivateAreaMasterPast', 9,   -35.45,  7.90,  -1250.15,  0.00, 0, 0, null), -- leave the orchard (15 yalms) back to the guild
+    (27602, 1090067, 'man1g0_shroud_trigger', 150, '', 0,  -650.00, 23.30,  -1095.00,  0.00, 0, 0, null), -- Seq 030: the trail by Lifemend Stump
+    (27603, 1000328, 'man1g0_3_pudgy_moogle', 150, 'PrivateAreaMasterPast', 3,  -642.53, 23.19,  -1099.61, -1.02, 0, 0, null), -- Seq 035, in the echo
+    (27604, 1090068, 'man1g0_arc_inside_trigger', 206, '', 0,   237.70, 12.00,  -1278.00,  0.00, 0, 0, null); -- Seq 055: deeper in Quiver's Hold
