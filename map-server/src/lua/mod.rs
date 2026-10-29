@@ -43,7 +43,7 @@ pub mod scheduler;
 pub mod userdata;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -309,6 +309,22 @@ impl LuaEngine {
             && self
                 .load_script(path)
                 .is_ok_and(|(lua, _)| lua.globals().get::<Function>(function_name).is_ok())
+    }
+
+    /// The region small-talk script (`quests/dft/DftSea.lua`, `DftFst.lua`,
+    /// `DftWil.lua`, "active for all players at all times") holding a
+    /// default line for `actor_class_id`, if any: its `onEventStarted` plays
+    /// the line. Each loads in its own VM — they share global names
+    /// (`onTalk`, `defaultTalkWithInn`).
+    pub fn default_talk_script(&self, actor_class_id: u32) -> Option<PathBuf> {
+        ["DftSea", "DftFst", "DftWil"].into_iter().find_map(|name| {
+            let path = self.resolver.quest(name);
+            let (lua, _) = self.load_script(&path).ok()?;
+            let has: Function = lua.globals().get("HasDefaultTalk").ok()?;
+            has.call::<bool>(actor_class_id)
+                .unwrap_or(false)
+                .then_some(path)
+        })
     }
 
     /// Execute an arbitrary top-level function on a script. If the function
@@ -1654,6 +1670,67 @@ mod tests {
         )
         .unwrap();
         assert!(engine.script_defines(&tmp.join("talks.lua"), "onEventStarted"));
+    }
+
+    /// Each region's small-talk script answers for its own townsfolk, and
+    /// its `onEventStarted` plays the NPC's line through the static actor.
+    #[test]
+    fn default_talk_finds_each_regions_line_and_plays_it() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/lua"));
+        let engine = LuaEngine::new(root);
+        let file = |id| {
+            engine
+                .default_talk_script(id)
+                .and_then(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
+        };
+        assert_eq!(file(1_001_424).as_deref(), Some("DftWil.lua")); // Gegeissa
+        assert_eq!(file(1_001_305).as_deref(), Some("DftSea.lua")); // Y'alabali
+        assert_eq!(file(1_000_066).as_deref(), Some("DftFst.lua")); // Alixe
+        assert_eq!(file(1_280_001), None); // the Limsa aetheryte
+
+        let npc_spec = LuaNpcSpec {
+            actor_id: 0x4400_0025,
+            name: "gegeissa".to_string(),
+            class_name: "PopulaceStandard".to_string(),
+            class_path: "/Chara/Npc/Populace/PopulaceStandard".to_string(),
+            unique_id: "gegeissa".to_string(),
+            zone_id: 170,
+            zone_name: "wil0Field01".to_string(),
+            state: 0,
+            pos: (0.0, 0.0, 0.0),
+            rotation: 0.0,
+            actor_class_id: 1_001_424,
+            quest_graphic: 0,
+        };
+        let result = engine.call_npc_on_event_started(
+            &engine.default_talk_script(1_001_424).unwrap(),
+            userdata::PlayerSnapshot {
+                actor_id: 1,
+                ..Default::default()
+            },
+            npc_spec,
+            "talkDefault".to_string(),
+            1,
+            Vec::new(),
+        );
+        assert!(
+            result.error.is_none(),
+            "DftWil onEventStarted errored: {:?}",
+            result.error
+        );
+        assert!(
+            result.commands.iter().any(|c| matches!(
+                c,
+                LuaCommand::RunEventFunction { function_name, args, .. }
+                    if function_name == "delegateEvent"
+                        && args.iter().any(|a| matches!(
+                            a,
+                            LuaCommandArg::String(s) if s == "defaultTalkWithGegeissa_001"
+                        ))
+            )),
+            "Gegeissa's default line must be delegated; got {:?}",
+            result.commands,
+        );
     }
 
     #[test]
