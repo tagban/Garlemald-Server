@@ -450,7 +450,26 @@ async fn dispatch_npc_event_started(
     // semantics from round 2 hold on both release arms.
     let quest_claimed = owner_claimed_by_current_quest(&player_handle, actor_class_id).await;
 
-    let unique_path = lua.resolver().npc(&zone_name, &class_name, &unique_id);
+    // In a private area (the openings' past cities) the owner shares the
+    // player's area, and its override is that area's
+    // (`unique/<zone>/PrivateArea/<area>_<level>/...`), never the present
+    // day's, as in Meteor's `CallLuaFunctionNpc`. Looking only at the zone's
+    // left 50 opening NPCs mute once their quest step moved on, and gave
+    // Momodi, Miounne and ten others their present-day scripts in the past.
+    let private_area = match world.session(player_handle.session_id).await {
+        Some(s) if player_handle.session_id != 0 => s
+            .current_private_area_name
+            .filter(|n| !n.is_empty())
+            .map(|n| (n, s.current_private_area_level)),
+        _ => None,
+    };
+    let unique_path = match &private_area {
+        Some((area, level)) => {
+            lua.resolver()
+                .npc_in_private_area(&zone_name, area, *level, &class_name, &unique_id)
+        }
+        None => lua.resolver().npc(&zone_name, &class_name, &unique_id),
+    };
     let base_path = lua.resolver().base_class(&class_path);
     // An override without its own `onEventStarted` (a blank file like
     // sea0Town01a's limsa_aetheryte.lua, a shop salesman's stock list, a
@@ -1739,6 +1758,19 @@ mod tests {
             "function onEventStarted(player, npc, eventName)\n    player:GetQuest(110500):SetQuestFlag(2)\nend\n",
         )
         .unwrap();
+        // an opening NPC: its present-day override and its own in the past
+        std::fs::write(
+            root.join("unique/test/Talker/past_one.lua"),
+            "function onEventStarted(player, npc, eventName)\n    player:GetQuest(110500):SetQuestFlag(2)\nend\n",
+        )
+        .unwrap();
+        let past = root.join("unique/test/PrivateArea/PrivateAreaMasterPast_2/Talker");
+        std::fs::create_dir_all(&past).unwrap();
+        std::fs::write(
+            past.join("past_one.lua"),
+            "function onEventStarted(player, npc, eventName)\n    player:GetQuest(110500):SetQuestFlag(3)\nend\n",
+        )
+        .unwrap();
 
         let lua = Arc::new(LuaEngine::new(&root));
         let world = WorldManager::new();
@@ -1761,7 +1793,12 @@ mod tests {
         );
         world.register_zone(zone).await;
 
-        for (actor_id, unique_id) in [(91u32, "blank_one"), (92, "init_one"), (93, "own_one")] {
+        for (actor_id, unique_id) in [
+            (91u32, "blank_one"),
+            (92, "init_one"),
+            (93, "own_one"),
+            (94, "past_one"),
+        ] {
             let mut npc_chara = Character::new(actor_id);
             npc_chara.base.class_path = "Chara/Npc/Object/Talker".into();
             npc_chara.base.class_name = "Talker".into();
@@ -1778,13 +1815,29 @@ mod tests {
         }
 
         let mut flags_after = Vec::new();
-        for (player_id, owner) in [(55u32, 91u32), (56, 92), (57, 93)] {
+        for (player_id, owner, area) in [
+            (55u32, 91u32, None),
+            (56, 92, None),
+            (57, 93, None),
+            (58, 94, Some("PrivateAreaMasterPast")),
+            (59, 94, None),
+        ] {
             let mut player_chara = Character::new(player_id);
             let mut quest = Quest::new(quest_actor_id(110_500), "TestDrain".to_string());
             quest.clear_dirty();
             player_chara.quest_journal.add(quest);
-            let player_handle =
-                ActorHandle::new(player_id, ActorKindTag::Player, 100, 0, player_chara);
+            let mut session = crate::data::Session::new(player_id);
+            session.current_zone_id = 100;
+            session.current_private_area_name = area.map(str::to_string);
+            session.current_private_area_level = 2;
+            world.upsert_session(session).await;
+            let player_handle = ActorHandle::new(
+                player_id,
+                ActorKindTag::Player,
+                100,
+                player_id,
+                player_chara,
+            );
             registry.insert(player_handle.clone()).await;
             let event = EventEvent::EventStarted {
                 player_actor_id: player_id,
@@ -1816,6 +1869,16 @@ mod tests {
             flags_after[2],
             1 << 2,
             "an override with its own onEventStarted still takes the event"
+        );
+        assert_eq!(
+            flags_after[3],
+            1 << 3,
+            "in the opening's past the private area's override runs, not the present day's"
+        );
+        assert_eq!(
+            flags_after[4],
+            1 << 2,
+            "outside a private area the zone's override runs"
         );
 
         let _ = std::fs::remove_dir_all(root);
