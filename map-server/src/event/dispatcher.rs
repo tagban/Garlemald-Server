@@ -452,7 +452,13 @@ async fn dispatch_npc_event_started(
 
     let unique_path = lua.resolver().npc(&zone_name, &class_name, &unique_id);
     let base_path = lua.resolver().base_class(&class_path);
-    if quest_claimed && unique_path.exists() {
+    // An override without its own `onEventStarted` (a blank file like
+    // sea0Town01a's limsa_aetheryte.lua, a shop salesman's stock list, a
+    // door's init) leaves the event to its base class, as Meteor's
+    // `CallLuaFunctionNpc` does; taking it whole made those owners inert, so
+    // clicking the Limsa aetheryte did nothing.
+    let unique_handles = lua.script_defines(&unique_path, "onEventStarted");
+    if quest_claimed && unique_handles {
         tracing::debug!(
             owner = owner_actor_id,
             class = actor_class_id,
@@ -460,7 +466,7 @@ async fn dispatch_npc_event_started(
             "NPC onEventStarted: unique override skipped — owner claimed by a current quest",
         );
     }
-    let script_path = if !quest_claimed && unique_path.exists() {
+    let script_path = if !quest_claimed && unique_handles {
         unique_path
     } else if base_path.exists() {
         base_path
@@ -1696,6 +1702,120 @@ mod tests {
             flags & (1 << 7),
             1 << 7,
             "NPC onEventStarted should have drained QuestSetFlag(7) into the live quest",
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A unique override that doesn't define `onEventStarted` (blank, like
+    /// sea0Town01a's limsa_aetheryte.lua, or init only) leaves the event to
+    /// the base class; one that defines it still takes it. Taking a blank
+    /// override whole released the client with nothing run, so clicking the
+    /// Limsa aetheryte did nothing.
+    #[tokio::test]
+    async fn unique_override_without_handler_falls_back_to_base_class() {
+        use crate::actor::Character;
+        use crate::actor::quest::{Quest, quest_actor_id};
+        use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+        use crate::zone::navmesh::StubNavmeshLoader;
+        use crate::zone::zone::Zone;
+
+        let root = tmpdir();
+        std::fs::create_dir_all(root.join("base/Chara/Npc/Object")).unwrap();
+        std::fs::create_dir_all(root.join("unique/test/Talker")).unwrap();
+        std::fs::write(
+            root.join("base/Chara/Npc/Object/Talker.lua"),
+            "function onEventStarted(player, npc, eventName)\n    player:GetQuest(110500):SetQuestFlag(1)\nend\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("unique/test/Talker/blank_one.lua"), "").unwrap();
+        std::fs::write(
+            root.join("unique/test/Talker/init_one.lua"),
+            "function init(npc) return false, false, 0, 0 end\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("unique/test/Talker/own_one.lua"),
+            "function onEventStarted(player, npc, eventName)\n    player:GetQuest(110500):SetQuestFlag(2)\nend\n",
+        )
+        .unwrap();
+
+        let lua = Arc::new(LuaEngine::new(&root));
+        let world = WorldManager::new();
+        let registry = ActorRegistry::new();
+        let db = Database::open(tempdb()).await.expect("db stub");
+        let zone = Zone::new(
+            100,
+            "test",
+            1,
+            "/Area/Zone/Test",
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(&StubNavmeshLoader),
+        );
+        world.register_zone(zone).await;
+
+        for (actor_id, unique_id) in [(91u32, "blank_one"), (92, "init_one"), (93, "own_one")] {
+            let mut npc_chara = Character::new(actor_id);
+            npc_chara.base.class_path = "Chara/Npc/Object/Talker".into();
+            npc_chara.base.class_name = "Talker".into();
+            npc_chara.base.unique_id = unique_id.into();
+            registry
+                .insert(ActorHandle::new(
+                    actor_id,
+                    ActorKindTag::Npc,
+                    100,
+                    0,
+                    npc_chara,
+                ))
+                .await;
+        }
+
+        let mut flags_after = Vec::new();
+        for (player_id, owner) in [(55u32, 91u32), (56, 92), (57, 93)] {
+            let mut player_chara = Character::new(player_id);
+            let mut quest = Quest::new(quest_actor_id(110_500), "TestDrain".to_string());
+            quest.clear_dirty();
+            player_chara.quest_journal.add(quest);
+            let player_handle =
+                ActorHandle::new(player_id, ActorKindTag::Player, 100, 0, player_chara);
+            registry.insert(player_handle.clone()).await;
+            let event = EventEvent::EventStarted {
+                player_actor_id: player_id,
+                owner_actor_id: owner,
+                event_name: "talkDefault".to_string(),
+                event_type: 1,
+                lua_params: vec![],
+            };
+            dispatch_event_event(&event, &registry, &world, &db, Some(&lua)).await;
+            let c = player_handle.character.read().await;
+            flags_after.push(
+                c.quest_journal
+                    .get(110_500)
+                    .map(|q| q.get_flags())
+                    .unwrap_or(0),
+            );
+        }
+        assert_eq!(
+            flags_after[0],
+            1 << 1,
+            "blank override: the base class's onEventStarted runs"
+        );
+        assert_eq!(
+            flags_after[1],
+            1 << 1,
+            "init-only override: the base class's onEventStarted runs"
+        );
+        assert_eq!(
+            flags_after[2],
+            1 << 2,
+            "an override with its own onEventStarted still takes the event"
         );
 
         let _ = std::fs::remove_dir_all(root);

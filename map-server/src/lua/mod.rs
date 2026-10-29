@@ -299,6 +299,18 @@ impl LuaEngine {
             .map_err(|e| anyhow::anyhow!("install_globals: {e}"))
     }
 
+    /// Whether the script at `path` defines the global function
+    /// `function_name` (false when it is missing, blank or fails to load).
+    /// A unique override only takes the functions it defines from its base
+    /// class: Meteor's `CallLuaFunctionNpc` calls the child's function when
+    /// the child has it and the parent's otherwise.
+    pub fn script_defines(&self, path: &Path, function_name: &str) -> bool {
+        path.exists()
+            && self
+                .load_script(path)
+                .is_ok_and(|(lua, _)| lua.globals().get::<Function>(function_name).is_ok())
+    }
+
     /// Execute an arbitrary top-level function on a script. If the function
     /// returns a Lua thread (i.e. the script wraps the body in a coroutine),
     /// this calls the thread and classifies the resulting yield.
@@ -601,7 +613,8 @@ impl LuaEngine {
     }
 
     /// NPC-specific helper: try the unique-override script first, then fall
-    /// back to the base-class script. Mirrors the C# `CallLuaFunctionNpc`.
+    /// back to the base-class script when the override doesn't define
+    /// `function_name`. Mirrors the C# `CallLuaFunctionNpc`.
     pub fn call_npc(
         &self,
         base_class_path: Option<&str>,
@@ -612,7 +625,7 @@ impl LuaEngine {
         args: MultiValue,
     ) -> Result<LuaCallResult> {
         let child = self.resolver.npc(zone_name, class_name, unique_id);
-        if child.exists() {
+        if self.script_defines(&child, function_name) {
             return self.call(&child, function_name, args);
         }
         if let Some(base) = base_class_path {
@@ -1612,6 +1625,35 @@ mod tests {
             mlua::MultiValue::new(),
         );
         assert!(result.is_err());
+    }
+
+    /// A unique override handles only the functions it defines: the blank
+    /// Limsa aetheryte override and a shop salesman's stock-only override
+    /// leave `onEventStarted` to their base classes.
+    #[test]
+    fn unique_override_defines_only_its_own_functions() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/lua"));
+        let engine = LuaEngine::new(root);
+        let r = engine.resolver();
+        let blank = r.npc("sea0Town01a", "AetheryteParent", "limsa_aetheryte");
+        assert!(blank.exists());
+        assert!(!engine.script_defines(&blank, "onEventStarted"));
+        assert!(engine.script_defines(
+            &r.base_class("/Chara/Npc/Object/Aetheryte/AetheryteParent"),
+            "onEventStarted"
+        ));
+        let stock = r.npc("wil0Town01", "PopulaceShopSalesman", "helena");
+        assert!(stock.exists());
+        assert!(!engine.script_defines(&stock, "onEventStarted"));
+        assert!(!engine.script_defines(&root.join("no/such/script.lua"), "onEventStarted"));
+
+        let tmp = tmpdir();
+        std::fs::write(
+            tmp.join("talks.lua"),
+            "function onEventStarted(player, npc, trigger) end",
+        )
+        .unwrap();
+        assert!(engine.script_defines(&tmp.join("talks.lua"), "onEventStarted"));
     }
 
     #[test]
