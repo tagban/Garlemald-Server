@@ -521,6 +521,26 @@ pub async fn apply_runtime_lua_command(
             }
             true
         }
+        // Quest items handed over in a talk (a key item delivered to its
+        // recipient) drain here, not through the processor.
+        LC::RemoveItem {
+            actor_id,
+            item_package,
+            catalog_id,
+            quantity,
+        } => {
+            apply_remove_item(
+                actor_id,
+                item_package,
+                catalog_id,
+                quantity,
+                registry,
+                Some(world),
+                db,
+            )
+            .await;
+            true
+        }
         LC::AddItemToRetainer {
             retainer_id,
             item_package,

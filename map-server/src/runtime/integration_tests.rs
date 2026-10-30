@@ -9587,6 +9587,67 @@ async fn join_gc_from_an_npc_script_enlists() {
     assert_eq!(gc, crate::actor::gc::GC_MAELSTROM as i64);
 }
 
+/// `RemoveItem` drained on the runtime path: a quest that hands a key item
+/// over in an NPC talk (a delivery) takes it out of the player's key items.
+/// It used to fall through as unhandled, so delivered items stayed.
+#[tokio::test]
+async fn remove_item_from_a_quest_talk_takes_the_key_item() {
+    use crate::actor::Character;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (90, 0, 0, 0, 'Courier')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    registry
+        .insert(ActorHandle::new(
+            90,
+            ActorKindTag::Player,
+            145,
+            90,
+            Character::new(90),
+        ))
+        .await;
+    assert!(db.add_key_item(90, 11_000_259).await.unwrap());
+
+    crate::runtime::quest_apply::apply_runtime_lua_commands(
+        vec![LuaCommand::RemoveItem {
+            actor_id: 90,
+            item_package: 100,
+            catalog_id: 11_000_259,
+            quantity: 1,
+        }],
+        &registry,
+        &db,
+        &world,
+        None,
+    )
+    .await;
+
+    let rows = db.get_item_package(90, 100).await.unwrap();
+    assert!(
+        rows.iter().all(|r| r.item_id != 11_000_259),
+        "the delivered transceiver should be gone",
+    );
+}
+
 /// `apply_promote_gc` happy path: a Recruit (rank 127) enrolled in
 /// the Maelstrom with the seal balance for a Recruit→Pvt3 hop (100
 /// seals) gets promoted to rank 11, has 100 seals deducted, and
@@ -10192,7 +10253,7 @@ async fn promote_gc_refuses_at_story_rank_cap() {
 /// Tier-shift gate refusal: a Maelstrom Corporal (17) at the
 /// Sergeant promotion tier-shift can have all the seals in the world,
 /// but without the per-GC story quest "An Officer and a Wise Man"
-/// (111405) completed, `apply_promote_gc` refuses to bump them past
+/// (111428) completed, `apply_promote_gc` refuses to bump them past
 /// rank 17. Mirrors the in-game `eventTalkQuestUncomplete()` dialog
 /// the script's comment header at PopulaceCompanyOfficer.lua:20
 /// describes.
@@ -10240,7 +10301,7 @@ async fn promote_gc_refuses_at_sergeant_tier_shift_without_quest_completed() {
     let mut chara = Character::new(177);
     chara.chara.gc_current = crate::actor::gc::GC_MAELSTROM;
     chara.chara.gc_rank_limsa = 17;
-    // Quest journal is empty — the gate quest 111405 is NOT completed.
+    // Quest journal is empty — the gate quest 111428 is NOT completed.
     registry
         .insert(ActorHandle::new(177, ActorKindTag::Player, 200, 177, chara))
         .await;
@@ -10284,7 +10345,7 @@ async fn promote_gc_refuses_at_sergeant_tier_shift_without_quest_completed() {
 
 /// Tier-shift gate happy path: completing the gate quest unblocks
 /// the Sergeant promotion. Same setup as the refusal test above but
-/// with quest 111405 marked complete on the player's journal — the
+/// with quest 111428 marked complete on the player's journal — the
 /// promotion goes through, seals deducted, rank bumped to 21.
 #[tokio::test]
 async fn promote_gc_passes_sergeant_tier_shift_when_quest_completed() {
@@ -10328,9 +10389,9 @@ async fn promote_gc_passes_sergeant_tier_shift_when_quest_completed() {
     let mut chara = Character::new(178);
     chara.chara.gc_current = crate::actor::gc::GC_MAELSTROM;
     chara.chara.gc_rank_limsa = 17;
-    // Mark "An Officer and a Wise Man" (111405) complete on the
+    // Mark "The Weakest Link" (111428) complete on the
     // journal — that's the Maelstrom Sergeant gate.
-    chara.quest_journal.set_completed(111_405, true);
+    chara.quest_journal.set_completed(111_428, true);
     registry
         .insert(ActorHandle::new(178, ActorKindTag::Player, 200, 178, chara))
         .await;
