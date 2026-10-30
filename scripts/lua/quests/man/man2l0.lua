@@ -24,7 +24,8 @@ SEQ_042	= 42;  	-- Enter and push at the MSK guild.
 SEQ_045	= 45;  	-- Talk to Isaudorel
 SEQ_050	= 50;  	-- Head to God's Grip push, talk with Blackburn.
 SEQ_055	= 55;  	-- Continue to the other push with Y'shtola in the subecho.
-SEQ_060	= 60;  	-- Unused? Talks about spying Stahlmann, Emerick, and Merod scheming.
+SEQ_060	= 60;  	-- Return to Baderon for the reward (the client's journal has no
+					-- step for it; its ending completed the quest by itself).
 SEQ_065	= 65;  	-- Unused? Talks about the meteor shower and the Ascian stealing the key.
 SEQ_070	= 70;  	-- Unused? Talks about heading to Ul'dah
 
@@ -45,6 +46,17 @@ TRIGGER_SEAFLD2				= 1090086;
 TRIGGER_SEAFLD3				= 1090087;
 
 -- Quest Markers
+
+-- Quest Markers (the journal map's own, in step order)
+MRKR_HOB				= 11000401;
+MRKR_SHIP_DECK			= 11000402;
+MRKR_SHIP_HOLD			= 11000403;
+MRKR_OUTCROP			= 11000404;
+MRKR_MSK				= 11000405;
+MRKR_ISAUDOREL			= 11000406;
+MRKR_GODS_GRIP			= 11000407;
+MRKR_GODS_GRIP_ECHO		= 11000408;
+MRKR_BADERON			= 11000409;
 
 -- Msg packs for the Npc LS
 NPCLS_MSGS = {
@@ -97,6 +109,8 @@ function onStateChange(player, quest, sequence)
 	elseif (sequence == SEQ_055) then
 		quest:SetENpc(TRIGGER_SEAFLD3, QFLAG_PUSH, false, true);
 		quest:SetENpc(YSHTOLA);
+	elseif (sequence == SEQ_060) then
+		quest:SetENpc(BADERON, QFLAG_REWARD);
 	end	
 	
 end
@@ -120,11 +134,7 @@ function onTalk(player, quest, npc)
 			GetWorldManager():DoZoneChange(player, 192, "PrivateAreaMasterPast", 0, 0, 1832.243, 16.352, 1834.965, 1.584);
 			return;
 		elseif (classId == BADERON) then
-			if (npc.CurrentArea.IsPrivate()) then
-				callClientFunction(player, "delegateEvent", player, quest, "processEvent000_2");
-			else
-				callClientFunction(player, "delegateEvent", player, quest, "processEvent010_3");
-			end
+			callClientFunction(player, "delegateEvent", player, quest, "processEvent010_3");
 		end
 	elseif (sequence >= SEQ_010 and sequence <= SEQ_020) then
 		if (onTalk_shipSequences(player, quest, npc, classId, sequence) == 1) then
@@ -152,6 +162,17 @@ function onTalk(player, quest, npc)
 		if (classId == YSHTOLA) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent080_2");
 		end
+	elseif (sequence == SEQ_060) then
+		-- The reward runs from a talk: a notice event can't drive the
+		-- reward window (it parked until disconnect in Beckon of the
+		-- Elementals).
+		if (classId == BADERON) then
+			callClientFunction(player, "delegateEvent", player, quest, "sqrwa", 300, 1, 1, 2);
+			callClientFunction(player, "delegateEvent", player, quest, "processEvent081_2", 1);
+			player:EndEvent();
+			player:CompleteQuest(quest);
+			return;
+		end
 	end	
 	
 	player:EndEvent();
@@ -160,7 +181,11 @@ end
 
 function onTalk_shipSequences(player, quest, npc, classId, sequence)
 	if (classId == HOB) then
-		if (npc.CurrentArea.ZoneId == 230 and npc.CurrentArea.IsPrivate()) then
+		-- Hob stands at the docks (man2l0_instance_hob, Limsa's
+		-- PrivateAreaMasterPast 8), on the ship (man2l0_echo_hob, zone 192)
+		-- and in town.
+		local hobSpawn = npc:GetUniqueId();
+		if (hobSpawn == "man2l0_instance_hob") then
 			local returnToShip = callClientFunction(player, "delegateEvent", player, quest, "processEvent010_2");
 			if (returnToShip == 1) then
 				player:EndEvent();				
@@ -171,14 +196,14 @@ function onTalk_shipSequences(player, quest, npc, classId, sequence)
 				end
 				return 1;
 			end
-		elseif (npc.CurrentArea.ZoneId == 192 and npc.CurrentArea.IsPrivate()) then
+		elseif (hobSpawn == "man2l0_echo_hob") then
 			local returnToPublic = callClientFunction(player, "delegateEvent", player, quest, "processEvent011_2");
 			if (returnToPublic == 1) then
 				player:EndEvent();
 				GetWorldManager():DoZoneChange(player, 230, nil, 0, 0, -639.325, 1, 403.967, 1.655);
 				return 1;
 			end
-		elseif (npc.CurrentArea.IsPublic()) then
+		else
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent010_3");
 		end
 	elseif (classId == BARRACUDA_KNIGHT1) then
@@ -242,7 +267,10 @@ function onPush(player, quest, npc)
 		GetWorldManager():DoZoneChange(player, 128, "PrivateAreaMasterPast", 3, 0, 198.314, 25.928, 1186.126, 1.6);
 	elseif (sequence == SEQ_055 and classId == TRIGGER_SEAFLD3) then
 		callClientFunction(player, "delegateEvent", player, quest, "processEvent081");
+		player:EndEvent();
+		quest:StartSequence(SEQ_060);
 		GetWorldManager():DoZoneChange(player, 133, nil, 0, 0, -435.501, 40, 202.698, -2.152);
+		return;
 	end	
 	
 	player:EndEvent();
@@ -250,11 +278,7 @@ function onPush(player, quest, npc)
 end
 
 function onNotice(player, quest, target)
-	callClientFunction(player, "delegateEvent", player, quest, "sqrwa", 300, 1, 1, 2);
-	player:CompleteQuest(quest);
-    callClientFunction(player, "delegateEvent", player, quest, "processEvent081_2", 1);
-    player:EndEvent();
-    quest:UpdateENPCs();
+	player:EndEvent();
 end
 
 function onNpcLS(player, quest, from, msgStep)
@@ -290,5 +314,24 @@ end
 
 function getJournalMapMarkerList(player, quest)
 	local sequence = quest:getSequence();
-	
+
+	if (sequence == SEQ_000) then
+		return MRKR_HOB;
+	elseif (sequence == SEQ_010) then
+		return MRKR_SHIP_DECK;
+	elseif (sequence == SEQ_015) then
+		return MRKR_SHIP_HOLD;
+	elseif (sequence == SEQ_035 or sequence == SEQ_060) then
+		return MRKR_BADERON;
+	elseif (sequence == SEQ_037) then
+		return MRKR_OUTCROP;
+	elseif (sequence == SEQ_042) then
+		return MRKR_MSK;
+	elseif (sequence == SEQ_045) then
+		return MRKR_ISAUDOREL;
+	elseif (sequence == SEQ_050) then
+		return MRKR_GODS_GRIP;
+	elseif (sequence == SEQ_055) then
+		return MRKR_GODS_GRIP_ECHO;
+	end
 end
