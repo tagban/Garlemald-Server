@@ -9406,10 +9406,11 @@ impl PacketProcessor {
             return;
         };
 
-        // A giver with a quest on offer: that quest's onTalk at SEQ_ACCEPT
+        // A giver with a quest on offer: that quest's onTalk (or, for a
+        // trigger such as the Ul'dah market entrance, onPush) at SEQ_ACCEPT
         // runs the offer, alone (another quest's generic EndEvent would
         // close it).
-        if hook_name == "onTalk"
+        if (hook_name == "onTalk" || hook_name == "onPush")
             && let Some(quest_id) = self.offered_quest_at(handle, npc_spec.actor_class_id).await
         {
             self.fire_quest_event_hook_inner(

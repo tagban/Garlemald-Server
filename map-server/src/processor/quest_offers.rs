@@ -41,11 +41,25 @@ fn givers() -> &'static Mutex<HashMap<u32, Vec<QuestEnpc>>> {
 /// (`Man*`) is offered only where it follows another quest: the opening
 /// quests replace themselves in-script, but from the level 8 quest on, each
 /// nation's story is given by its giver once the quest before it is done.
-fn is_offerable(script_name: &str, prerequisite: u32) -> bool {
+fn is_offerable(script_name: &str, has_prerequisite: bool) -> bool {
     if script_name.starts_with("dft") || script_name.starts_with("trl") {
         return false;
     }
-    !script_name.starts_with("man") || prerequisite != 0
+    !script_name.starts_with("man") || has_prerequisite
+}
+
+/// Quests that follow any one of several others, which the single
+/// `prerequisite` column can't say: Fade to White follows whichever
+/// nation's level 13 quest the player finished.
+const ANY_OF_PREREQUISITES: &[(u32, &[u32])] = &[(110013, &[110004, 110008, 110012])];
+
+/// The quests any one of which unlocks this one (empty: none needed).
+fn prerequisites(quest_id: u32, prerequisite: u32) -> Vec<u32> {
+    match ANY_OF_PREREQUISITES.iter().find(|(id, _)| *id == quest_id) {
+        Some((_, any)) => any.to_vec(),
+        None if prerequisite != 0 => vec![prerequisite],
+        None => Vec::new(),
+    }
 }
 
 impl PacketProcessor {
@@ -67,11 +81,12 @@ impl PacketProcessor {
                 .iter()
                 .filter(|m| {
                     let name = m.class_name.to_lowercase();
-                    is_offerable(&name, m.prerequisite)
+                    let needs = prerequisites(m.id, m.prerequisite);
+                    is_offerable(&name, !needs.is_empty())
                         && !journal.has(m.id)
                         && !journal.is_completed(m.id)
                         && level >= m.min_level
-                        && (m.prerequisite == 0 || journal.is_completed(m.prerequisite))
+                        && (needs.is_empty() || needs.iter().any(|p| journal.is_completed(*p)))
                         && engine.resolver().quest(&name).exists()
                 })
                 .map(|m| m.id)
@@ -238,12 +253,19 @@ mod tests {
 
     #[test]
     fn story_quests_are_offered_only_after_a_prerequisite() {
-        assert!(!is_offerable("man0l1", 0));
-        assert!(is_offerable("man1u0", 110010));
-        assert!(!is_offerable("dftsea", 0));
-        assert!(!is_offerable("dftsea", 110001));
-        assert!(!is_offerable("trl0l1", 0));
-        assert!(is_offerable("etc1l1", 0));
-        assert!(is_offerable("wld0l1", 0));
+        assert!(!is_offerable("man0l1", false));
+        assert!(is_offerable("man1u0", true));
+        assert!(!is_offerable("dftsea", false));
+        assert!(!is_offerable("dftsea", true));
+        assert!(!is_offerable("trl0l1", false));
+        assert!(is_offerable("etc1l1", false));
+        assert!(is_offerable("wld0l1", false));
+    }
+
+    #[test]
+    fn fade_to_white_follows_any_nations_level_13_quest() {
+        assert_eq!(prerequisites(110013, 0), vec![110004, 110008, 110012]);
+        assert_eq!(prerequisites(110011, 110010), vec![110010]);
+        assert!(prerequisites(110001, 0).is_empty());
     }
 }
