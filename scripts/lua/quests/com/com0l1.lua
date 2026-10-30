@@ -16,8 +16,8 @@ Admiral. Walcher's price is Urianger, the "false prophet" camped on the
 cliffs east of Wineport. Urianger sets a familiar on you (a duty entered in
 place, SimpleContentCom0l101), a Miqo'te named Y'shtola finds you after the
 fight, and Walcher settles for your report and signs a retraction. Guincum
-takes it and invites you to enlist: talking to him again inducts you
-(PopulaceCompanyOfficer).
+takes it and invites you to enlist: he offers the interim enlistment
+next (Com0l2).
 
 The client script (com0l1) names the events; seed 122 holds the cast, the
 camp trigger and the familiar.

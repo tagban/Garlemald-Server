@@ -8,7 +8,7 @@ Functions:
 
 eventTalkWelcome()                              - Welcome, then "too raw, come back later" (below the test quest's level)
 eventTalkWelcomeQuest()                         - Welcome alone (eligible, test quest not done)
-eventTalkPreJoin()                              - Induction speech for a new recruit
+eventTalkPreJoin()                              - "Do not disappoint us": to a recruit
 eventTalkExclusive()                            - Brush-off for another company's members
 eventTalkJoinedOnly()                           - Salute and "never forget whose standard you fight under"
 eventTalkJoined(gcRank, gcRank,  isCanAfford, isShowPromotion)  - Menu to ask about/for promotion
@@ -26,6 +26,7 @@ eventTalkStepBreak()                            - Resets NPC target/facing
 --]]
 
 require ("global")
+require ("gcseals")
 
 function init(npc)
 	return false, false, 0, 0;	
@@ -37,41 +38,32 @@ gcOfficer = {
 [1500198] = 3, -- Flame Officer
 }
 
--- Each company's test quest. Finishing it is what earns the induction; the
--- officer gives it (the quest claims him while it's on offer or underway).
-gcTestQuest = {
-[1] = 111401, -- The Price of Integrity (Com0l1)
-[2] = 111601, -- Breaking the Seals (Com0g1)
-[3] = 111801, -- Career Opportunities (Com0u1)
-}
-
 GC_TEST_LEVEL = 22;
 
 function onEventStarted(player, npc, triggerName)
 
     npcId = npc:GetActorClassId();
-    local npcGC = gcOfficer[npcId];
-    playerGC = player.gcCurrent;
+    -- A quest on offer here, or one underway that uses the officer, answers
+    -- the talk itself (the server runs quest hooks after this script).
+    if player:HasQuestNpc(npcId) then
+        return;
+    end
 
-    if playerGC == npcGC then
-        talkJoined(player, playerGC);
-    elseif playerGC ~= 0 then
+    local npcGC = gcOfficer[npcId];
+    local sworn = GetSwornGC(player);
+
+    if sworn == npcGC then
+        talkJoined(player, npcGC);
+    elseif sworn ~= 0 then
         callClientFunction(player, "eventTalkExclusive");
-    elseif player:IsQuestCompleted(gcTestQuest[npcGC]) then
-        -- The test is passed: the induction speech, the join effect, and the
-        -- company's roll (as a Recruit until the first promotion).
+    elseif IsGCRecruit(player, npcGC) then
+        -- A recruit with nothing to hand in: live up to the name.
         callClientFunction(player, "eventTalkPreJoin");
-        callClientFunction(player, "eventDoRankUp", 127, 127);
-        player:JoinGC(npcGC);
-        callClientFunction(player, "eventRankUpDone", 127, 127);
     elseif player:GetHighestLevel() < GC_TEST_LEVEL then
         -- "Too raw": come back with a reputation.
         callClientFunction(player, "eventTalkWelcome");
     else
-        -- The test quest is on offer or underway: its own onTalk answers
-        -- (the server runs quest hooks after this script), so stay silent
-        -- here, as PopulaceStandard does.
-        return;
+        callClientFunction(player, "eventTalkWelcomeQuest");
     end
     callClientFunction(player, "eventTalkStepBreak");
     player:EndEvent();

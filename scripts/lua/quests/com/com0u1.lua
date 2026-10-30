@@ -16,7 +16,7 @@ support. Taylor's price is Urianger: find the Archon by the docks southeast
 of him in Western Thanalan. Urianger sets a familiar on you (a duty entered
 in place, SimpleContentCom0u101) and vanishes; Taylor is pleased enough
 with what you learned to back the Flames, and Aubrey invites you to enlist:
-talking to him again inducts you (PopulaceCompanyOfficer).
+he offers the interim enlistment next (Com0u2).
 
 The client script (com0u1) names the events; seed 122 holds the cast, the
 dock trigger and the familiar.

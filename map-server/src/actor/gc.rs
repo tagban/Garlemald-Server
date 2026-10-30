@@ -55,6 +55,12 @@ pub const SEAL_FLAME: u32 = 1_000_203;
 /// retail default on fresh characters.
 pub const RANK_RECRUIT: u8 = 127;
 
+/// A sworn member's rank: Private Third Class (11) up. Recruits (127) have
+/// joined provisionally, through the company's `Com0x2`.
+pub fn is_sworn_rank(rank: u8) -> bool {
+    (11..RANK_RECRUIT).contains(&rank)
+}
+
 pub fn is_valid_gc(gc: u8) -> bool {
     matches!(gc, GC_MAELSTROM | GC_TWIN_ADDER | GC_IMMORTAL_FLAMES)
 }

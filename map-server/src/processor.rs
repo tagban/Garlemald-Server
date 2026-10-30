@@ -10542,6 +10542,7 @@ pub(crate) fn build_player_snapshot_for_login(
         // login and player.lua's opening-zone reconnect branches never ran
         // (a relog mid-opening stranded the player). (Garlemald-Server #197.)
         completed_quests: c.quest_journal.iter_completed().collect(),
+        quest_npcs: c.quest_npc_classes(),
         active_quests: c
             .quest_journal
             .slots

@@ -602,6 +602,10 @@ pub struct PlayerSnapshot {
     pub completed_quests: Vec<u32>,
     /// Active quest ids.
     pub active_quests: Vec<u32>,
+    /// Classes of the NPCs the player's quests answer for: quest offers'
+    /// givers and the NPCs a taken quest has marked. An NPC's own script
+    /// stays quiet for these (the quest hook that runs after it talks).
+    pub quest_npcs: Vec<u32>,
     /// Per-active-quest state — `(quest_id, sequence, flags, counters)`
     /// snapshotted at build time so [`LuaQuestHandle`] / [`LuaQuestDataHandle`]
     /// can answer getters without a round-trip back to the Rust side.
@@ -772,6 +776,7 @@ impl From<&crate::actor::Player> for PlayerSnapshot {
             current_event_name: p.player.current_event_name.clone(),
             current_event_type: p.player.current_event_type,
             completed_quests,
+            quest_npcs: p.character.quest_npc_classes(),
             active_quests,
             active_quest_states,
             unlocked_aetherytes,
@@ -2103,6 +2108,11 @@ impl UserData for LuaPlayer {
         });
         methods.add_method("IsQuestCompleted", |_, this, id: u32| {
             Ok(this.snapshot.completed_quests.contains(&id))
+        });
+        // Whether one of the player's quests answers for an NPC of this
+        // class (an offer it gives, or a taken quest's marker on it).
+        methods.add_method("HasQuestNpc", |_, this, class_id: u32| {
+            Ok(this.snapshot.quest_npcs.contains(&class_id))
         });
         methods.add_method("CanAcceptQuest", |_, this, id: u32| {
             Ok(!this.snapshot.completed_quests.contains(&id)
