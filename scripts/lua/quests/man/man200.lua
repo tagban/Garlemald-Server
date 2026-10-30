@@ -110,12 +110,13 @@ function onStateChange(player, quest, sequence)
 		quest:GetData():SetTimeNow();
 		quest:SetTimeUpdate(true);
 	elseif (sequence == SEQ_027) then
+		-- Tataru introduces your Path companion, then you name them and
+		-- she gives the reward. No companion actor is placed: the client's
+		-- own scenes draw the companion from the saved choice.
 		if (quest:GetData():GetFlag(FLAG_DUTY_COMPLETE)) then
-			quest:SetENpc(MOMODI, QFLAG_TALK);
-			quest:SetENpc(TATARU);
+			quest:SetENpc(TATARU, QFLAG_REWARD);
 		else
 			quest:SetENpc(TATARU, QFLAG_TALK);
-			quest:SetENpc(SNPC_START + player:GetSNpcSkin());
 		end
 	end
 	
@@ -190,21 +191,13 @@ function onTalk(player, quest, npc)
 			quest:NewNpcLsMsg(6);
 		end
 	elseif (sequence == SEQ_027) then
-		if (classId == MOMODI) then
-			callClientFunction(player, "delegateEvent", player, quest, "pE25", "???", 1, 1, 1, player:GetInitialTown());
-		elseif (classId == TATARU) then
+		if (classId == TATARU) then
 			if (not quest:GetData():GetFlag(FLAG_DUTY_COMPLETE)) then
-				startMan20001Content(player, quest);
-				return;
+				meetPathCompanion(player, quest);
 			else
-				callClientFunction(player, "delegateEvent", player, quest, "pE050_2", player:GetSNpcNickname(), player:GetSNpcSkin(), player:GetSNpcPersonality(), player:GetSNpcCoordinate(), player:GetInitialTown());
+				namePathCompanion(player, quest);
 			end
-		elseif (classId > SNPC_START and classId < SNPC_END) then
-			local name = callClientFunction(player, "delegateEvent", player, quest, "pEN", player:GetSNpcPersonality());
-			if (not name == nil) then
-				player:SetSNpc(name, player:GetSNpcSkin(), player:GetSNpcPersonality());
-				--player:GetDirector("QuestEventMan20001"):SetData("NameSet", true);
-			end
+			return;
 		end
 	end
 	
@@ -387,26 +380,36 @@ function getJournalMapMarkerList(player, quest)
 	end	
 end
 
-function startMan20001Content(player, quest)
+-- The naming duty, played with the client's own scenes in the Waking Sands:
+-- the duty prompt, then Tataru's introduction (pE050, a cutscene that
+-- fades in after a warp, so a warp in place follows it).
+function meetPathCompanion(player, quest)
 	local result = callClientFunction(player, "delegateEvent", player, quest, "contentsJoinAskInBasaClass");
 	if (result == 1) then
 		callClientFunction(player, "delegateEvent", player, quest, "pE050", player:GetSNpcNickname(), player:GetSNpcSkin(), player:GetSNpcPersonality(), player:GetSNpcCoordinate(), player:GetInitialTown());
-		-- DO NAMING DUTY HERE			
-		-- For now just skip the sequence
 		player:EndEvent();
-		GetWorldManager():DoZoneChange(player, 230, nil, 0, 0, -639.325, 1, 403.967, 1.655);
-		
-		local contentArea = player.CurrentArea:CreateContentArea(player, "/Area/PrivateArea/Content/PrivateAreaMasterSimpleContent", "man20001", "SimpleContent30002", "Quest/QuestDirectorEventMan20001");
-		
-		if (contentArea == nil) then
-			return;
-		end
-		
-		director = contentArea:GetContentDirector();		
-		player:AddDirector(director);		
-		director:StartDirector(false);		
-		GetWorldManager():DoZoneChangeContent(player, contentArea, -200, 0 -160, -1.6, 2);		
+		quest:GetData():SetFlag(FLAG_DUTY_COMPLETE);
+		quest:UpdateENPCs();
+		GetWorldManager():DoZoneChange(player, 181, "PrivateAreaMasterPast", 0, 15, player.positionX, player.positionY, player.positionZ, player.rotation);
 		return;
 	end
 	player:EndEvent();
+end
+
+-- Name the companion (pEN), hear them answer (pE055), the closing scene
+-- with their new name (pE060), and the reward.
+function namePathCompanion(player, quest)
+	-- pEN answers with the typed name, or a negative number when the box
+	-- was left empty; then the companion keeps the name they have.
+	local name = callClientFunction(player, "delegateEvent", player, quest, "pEN", player:GetSNpcPersonality());
+	if (type(name) == "string" and name ~= "") then
+		player:SetSNpc(name, SNPC_START - 1 + player:GetSNpcSkin(), player:GetSNpcPersonality());
+	else
+		name = player:GetSNpcNickname();
+	end
+	callClientFunction(player, "delegateEvent", player, quest, "pE055", name, player:GetSNpcSkin(), player:GetSNpcPersonality(), player:GetSNpcCoordinate(), player:GetInitialTown());
+	callClientFunction(player, "delegateEvent", player, quest, "pE060", name, player:GetSNpcSkin(), player:GetSNpcPersonality(), player:GetSNpcCoordinate(), player:GetInitialTown());
+	callClientFunction(player, "delegateEvent", player, quest, "sqrwa", 300, 1, 1, 2);
+	player:EndEvent();
+	player:CompleteQuest(quest);
 end
