@@ -62,11 +62,11 @@ fn prerequisites(quest_id: u32, prerequisite: u32) -> Vec<u32> {
     }
 }
 
-/// Grand Company quests by the company's standing. `com0x1`-`com0x4`,
-/// `com0x6` and the oath `com0x7` are for recruits (their prerequisites
-/// chain from the test quest); `com0x5` (the Corporal-to-Sergeant gate),
-/// `com5*` and `gc*` are for sworn members. Anyone sworn to another company
-/// is offered none of this one's, and the oath isn't offered twice.
+/// Grand Company quests by the company's standing. `com0x1`-`com0x6` and
+/// the oath `com0x7` are the recruits' arc (their prerequisites chain from
+/// the test quest); `com5*` and `gc*` are for sworn members. Anyone sworn
+/// to another company is offered none of this one's, and the oath isn't
+/// offered twice.
 fn company_gate(script_name: &str, chara: &crate::actor::CharaState) -> bool {
     use crate::actor::gc;
     let (nation, kind) = if let Some(rest) = script_name.strip_prefix("com") {
@@ -103,7 +103,6 @@ fn company_gate(script_name: &str, chara: &crate::actor::CharaState) -> bool {
     let sworn_here = sworn_to == company;
     match kind.as_str() {
         "07" => !sworn_here,
-        "05" => sworn_here && rank_in(company) >= 17,
         "gc" => sworn_here,
         k if k.starts_with('5') => sworn_here,
         _ => true,
@@ -336,7 +335,7 @@ mod tests {
         assert!(company_gate("com0l1", &none));
         assert!(company_gate("com0g2", &none));
         assert!(company_gate("com0u7", &none));
-        assert!(!company_gate("com0l5", &none));
+        assert!(company_gate("com0l5", &none));
         assert!(!company_gate("com5g0", &none));
         assert!(!company_gate("gcu101", &none));
         // A recruit (127) of one company may still try the others.
@@ -345,14 +344,11 @@ mod tests {
         assert!(company_gate("com0l7", &recruit));
         // Sworn to the Maelstrom as a Corporal (17).
         let sworn = standing(1, 17, 127, 127);
-        assert!(company_gate("com0l5", &sworn));
         assert!(company_gate("com5l0", &sworn));
         assert!(company_gate("gcl101", &sworn));
         assert!(!company_gate("com0l7", &sworn));
         assert!(!company_gate("com0g1", &sworn));
         assert!(!company_gate("gcu101", &sworn));
-        // The Sergeant gate needs Corporal first.
-        assert!(!company_gate("com0l5", &standing(1, 15, 127, 127)));
         // Other quests are untouched.
         assert!(company_gate("man300", &sworn));
     }
