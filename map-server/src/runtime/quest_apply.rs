@@ -889,6 +889,36 @@ pub async fn apply_runtime_lua_command(
         // onEmote hook uses). Without this arm the emote animation packet was
         // dropped, so emotes only played inside a scripted quest interaction.
         // Mirrors the processor's `apply_do_emote` fan-out. (Garlemald-Server #46.)
+        // `player:SetSNpc(...)` from a quest talk (Fade to White's Path
+        // companion choice) reaches this drain, not the login applier, and
+        // fell through as unhandled: the choice was never kept, so every
+        // later companion scene was given skin 0 and stalled. Mirrors the
+        // processor's `apply_set_snpc`.
+        LC::SetSNpc {
+            player_id,
+            nickname,
+            actor_class_id,
+            personality,
+        } => {
+            if let Some(handle) = registry.get(player_id).await {
+                let skin = actor_class_id.saturating_sub(1_070_000) as u8;
+                let coordinate = {
+                    let mut c = handle.character.write().await;
+                    c.chara.snpc_nickname = nickname.clone();
+                    c.chara.snpc_skin = skin;
+                    c.chara.snpc_personality = personality;
+                    c.chara.snpc_coordinate
+                };
+                match db
+                    .save_snpc(player_id, nickname, skin, personality, coordinate)
+                    .await
+                {
+                    Ok(()) => tracing::info!(player = player_id, skin, personality, "SetSNpc applied"),
+                    Err(e) => tracing::warn!(player = player_id, err = %e, "SetSNpc: DB persist failed"),
+                }
+            }
+            true
+        }
         LC::DoEmote {
             actor_id,
             target_actor_id,
