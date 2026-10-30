@@ -52,10 +52,9 @@ EVENT_DOOR_OFFICE_W		= 1090161;
 EVENT_DOOR_OFFICE_E		= 1090162;
 
 GRIDANIA_TRIGGER		= 1090255;
--- The Moonspore Grove escort is a duty this server can't run yet: its
--- scenes play on two walk-ins at Camp Nine Ivies' trigger instead (seed 119).
+-- Camp Nine Ivies' trigger (seed 119): the first walk-in plays the sylphs'
+-- plea, the next starts the Moonspore Grove escort (SimpleContentMan20601).
 DUTY_START_TRIGGER		= 1090293;
-DUTY_CUTSCENE_TRIGGER	= 1090293;
 NINE_IVIES_OUTSIDE		= {151, 1712.0, 31.0, -838.0, 3.14}; -- on the slope, 10 yalms north of the trigger
 
 -- Msg packs for the Npc LS. Only used for SEQ_005 but different ones for different SNPCs.
@@ -129,8 +128,9 @@ function onStateChange(player, quest, sequence)
 	-- Sequence Specific ENPCs
 	if (sequence == SEQ_010) then
 		quest:SetENpc(GRIDANIA_TRIGGER, QFLAG_PUSH, false, true);
-	elseif (sequence == SEQ_015 or sequence == SEQ_025) then
-		quest:SetENpc(DUTY_START_TRIGGER, QFLAG_PUSH, false, true);	
+	elseif (sequence >= SEQ_015 and sequence <= SEQ_025) then
+		-- also at 20 and 25: a failed or interrupted duty restarts here
+		quest:SetENpc(DUTY_START_TRIGGER, QFLAG_PUSH, false, true);
 	elseif (sequence == SEQ_030) then
 		quest:SetENpc(TATARU, QFLAG_REWARD);
 	end
@@ -331,25 +331,45 @@ function onPush(player, quest, npc)
 		-- The duty prompt, then the sylphs' plea at the camp (pE13)
 		local result = callClientFunction(player, "delegateEvent", player, quest, "contentsJoinAskInBasaClass");
 		if (result == 1) then
+			-- pE13 ends arming the after-warp veil, and the duty starts in
+			-- place (no warp), so a plain warp clears it first; the duty
+			-- starts on the walk back into the trigger.
 			callClientFunction(player, "delegateEvent", player, quest, "pE13", player:GetSNpcNickname(), player:GetSNpcSkin(), player:GetSNpcPersonality(), player:GetSNpcCoordinate(), player:GetInitialTown());
 			player:EndEvent();
-			quest:StartSequence(SEQ_025);
+			quest:StartSequence(SEQ_020);
 			warpTo(player, NINE_IVIES_OUTSIDE);
 			return;
 		end
-	elseif (sequence == SEQ_025 and classId == DUTY_START_TRIGGER) then
-		-- The grove, the podling, and back to the camp (the escort skipped)
-		callClientFunction(player, "delegateEvent", player, quest, "processEvent016");
-		callClientFunction(player, "delegateEvent", player, quest, "pE20", player:GetSNpcNickname(), player:GetSNpcSkin(), player:GetSNpcPersonality(), player:GetSNpcCoordinate(), player:GetInitialTown());
-		callClientFunction(player, "delegateEvent", player, quest, "pE30", player:GetSNpcNickname(), player:GetSNpcSkin(), player:GetSNpcPersonality(), player:GetSNpcCoordinate(), player:GetInitialTown());
-		player:EndEvent();
-		quest:StartSequence(SEQ_030);
-		warpTo(player, NINE_IVIES_OUTSIDE);
+	elseif ((sequence == SEQ_020 or sequence == SEQ_025) and classId == DUTY_START_TRIGGER) then
+		startMan206Content(player, quest);
 		return;
 	end
 	
 	player:EndEvent();
 	quest:UpdateENPCs();
+end
+
+-- The Moonspore Grove escort, in a content instance of the East Shroud. Its
+-- director (QuestDirectorMan20601) plays the grove and camp scenes.
+function startMan206Content(player, quest)
+	quest:StartSequence(SEQ_020);
+	local contentArea = player.CurrentArea:CreateContentArea(player, "/Area/PrivateArea/Content/PrivateAreaMasterSimpleContent", "Man20601", "SimpleContentMan20601", "Quest/QuestDirectorMan20601");
+	if (contentArea == nil) then
+		player:EndEvent();
+		return;
+	end
+	local director = contentArea:GetContentDirector();
+	player:AddDirector(director);
+	director:StartDirector(false);
+	player:KickEvent(director, "noticeEvent", true);
+	player:SetLoginDirector(director);
+	player:EndEvent();
+	-- Into the instance in place (spawnType 0x16): the duty's scenes are
+	-- shot on East Shroud's own map, which has no duty copy to load, and a
+	-- reload of the resident map never clears "Now Loading". The player
+	-- stays where they stand; the coordinates are unused.
+	GetWorldManager():DoZoneChangeContent(player, contentArea,
+		player.positionX, player.positionY, player.positionZ, player.rotation, 0x16);
 end
 
 function onNpcLS(player, quest, from, msgStep)
@@ -387,6 +407,8 @@ function getJournalMapMarkerList(player, quest)
 		return MRKR_GRIDANIA;
 	elseif (sequence == SEQ_015) then
 		return MRKR_NINE_IVES;
+	elseif (sequence == SEQ_020) then
+		return MRKR_DUTY_MID;
 	elseif (sequence == SEQ_025) then
 		return MRKR_NINE_IVES;
 	elseif (sequence == SEQ_030) then

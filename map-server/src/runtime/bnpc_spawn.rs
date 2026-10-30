@@ -31,6 +31,37 @@ pub(crate) async fn spawn_battle_npc(
     registry: &ActorRegistry,
     lua: Option<&Arc<LuaEngine>>,
 ) -> bool {
+    spawn_battle_npc_as(
+        bnpc_id,
+        parent_zone_id,
+        expected_actor_id,
+        gm,
+        None,
+        None,
+        db,
+        world,
+        registry,
+        lua,
+    )
+    .await
+}
+
+/// [`spawn_battle_npc`] wearing another class's look (`appearance_class_id`,
+/// from `gamedata_actor_appearance`) and/or a custom name: an escort's Path
+/// companion is the player's own companion, not a fixed pool class.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn spawn_battle_npc_as(
+    bnpc_id: u32,
+    parent_zone_id: u32,
+    expected_actor_id: u32,
+    gm: Option<Option<String>>,
+    appearance_class_id: Option<u32>,
+    display_name: Option<String>,
+    db: &Database,
+    world: &WorldManager,
+    registry: &ActorRegistry,
+    lua: Option<&Arc<LuaEngine>>,
+) -> bool {
     // 1. Load the joined spawn DTO from the database.
     let spawn = match db.load_battle_npc_spawn(bnpc_id).await {
         Ok(Some(row)) => row,
@@ -98,7 +129,7 @@ pub(crate) async fn spawn_battle_npc(
         spawn.rotation,
         spawn.actor_state,
         spawn.animation_id,
-        None,
+        display_name,
     );
     // Give every script-spawned BattleNpc real HP. The seed `hp` column is
     // 0 for many groups (incl. the SEQ_005 tutorial wolves/Yda/Papalymo),
@@ -130,7 +161,8 @@ pub(crate) async fn spawn_battle_npc(
     // an empty model: creature mobs (wolves) have no mesh to draw and are
     // invisible, and humanoid allies (Yda/Papalymo) fall back to an empty
     // skeleton that renders as a knocked-out/downed pose. (Garlemald #28.)
-    if let Ok(Some(app)) = db.load_npc_appearance(spawn.actor_class_id).await {
+    let look_class_id = appearance_class_id.unwrap_or(spawn.actor_class_id);
+    if let Ok(Some(app)) = db.load_npc_appearance(look_class_id).await {
         let (model_id, slots) = app.pack();
         bnpc.npc.character.chara.model_id = model_id;
         bnpc.npc.character.chara.appearance_ids = slots;

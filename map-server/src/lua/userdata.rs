@@ -4211,7 +4211,13 @@ impl UserData for LuaWorldManager {
         // `GetWorldManager().SpawnBattleNpcById(...)` — not `:`.
         methods.add_function(
             "SpawnBattleNpcById",
-            |lua, (id, content_area): (u32, mlua::AnyUserData)| {
+            |lua,
+             (id, content_area, appearance_class_id, display_name): (
+                u32,
+                mlua::AnyUserData,
+                Option<u32>,
+                Option<String>,
+            )| {
                 let (parent_zone_id, area_name, queue) = {
                     let area = content_area.borrow::<LuaContentArea>()?;
                     (
@@ -4234,6 +4240,8 @@ impl UserData for LuaWorldManager {
                         bnpc_id: id,
                         parent_zone_id,
                         expected_actor_id,
+                        appearance_class_id: appearance_class_id.filter(|&c| c != 0),
+                        display_name: display_name.filter(|n| !n.is_empty()),
                     },
                 );
                 tracing::debug!(

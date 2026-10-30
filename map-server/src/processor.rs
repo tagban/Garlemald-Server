@@ -2582,9 +2582,22 @@ impl PacketProcessor {
                         bnpc_id,
                         parent_zone_id: pz,
                         expected_actor_id,
+                        appearance_class_id,
+                        display_name,
                     } => {
-                        self.apply_spawn_battle_npc_by_id(bnpc_id, pz, expected_actor_id)
-                            .await;
+                        crate::runtime::bnpc_spawn::spawn_battle_npc_as(
+                            bnpc_id,
+                            pz,
+                            expected_actor_id,
+                            None,
+                            appearance_class_id,
+                            display_name,
+                            &self.db,
+                            &self.world,
+                            &self.registry,
+                            self.lua.as_ref(),
+                        )
+                        .await;
                     }
                     crate::lua::command::LuaCommand::SpawnActor {
                         zone_id: sz,
@@ -3065,6 +3078,26 @@ impl PacketProcessor {
         let session_id = handle.session_id;
         let actor_id = handle.actor_id;
 
+        // spawnType 0x16 enters the instance IN PLACE: no warp, no reload.
+        // Retail stages same-map duties this way (Together We Stand's
+        // Moonspore Grove scenes are all shot on East Shroud's own map,
+        // which has no "a" duty copy), and the 0x10 reload below can't
+        // serve them: a field map that is already resident never repaints
+        // after it, and the screen stays on "Now Loading". The player keeps
+        // standing where they are, so the coordinates passed in are unused.
+        let in_place = spawn_type == 0x16;
+        let (x, y, z, rotation) = if in_place {
+            let c = handle.character.read().await;
+            (
+                c.base.position_x,
+                c.base.position_y,
+                c.base.position_z,
+                c.base.rotation,
+            )
+        } else {
+            (x, y, z, rotation)
+        };
+
         // 1. Update character position so subsequent reads + the zone-in
         //    bundle's `CreateSpawnPositionPacket` see the new coords.
         //    Also purge LOSE_ON_ZONING status effects — content-area
@@ -3167,7 +3200,10 @@ impl PacketProcessor {
         //    RX 0x0007 zone-in-complete. (Garlemald-Server #46, round 4.)
         if let Some(mut snap) = self.world.session(session_id).await {
             snap.destination_spawn_type = spawn_type;
-            snap.reload_in_flight = true;
+            // No reload in place, so no RX 0x0007 would ever clear it.
+            if !in_place {
+                snap.reload_in_flight = true;
+            }
             self.world.upsert_session(snap).await;
         }
 
@@ -3178,6 +3214,28 @@ impl PacketProcessor {
             tracing::warn!(player = player_id, "DoZoneChangeContent: no client");
             return;
         };
+
+        // In place there is no zone-in bundle to spawn the director, and
+        // the kick below needs it on the client first.
+        if in_place
+            && let Some(snap) = self.world.session(session_id).await
+            && let Some(active) = snap.active_content_script.as_ref()
+        {
+            let zone_name = match self.world.zone(parent_zone_id).await {
+                Some(z) => z.read().await.core.zone_name.clone(),
+                None => String::new(),
+            };
+            for mut sub in crate::world_manager::build_director_spawn_subpackets(
+                active.director_actor_id,
+                active.parent_zone_id,
+                &format!("/Director/{}", active.director_name),
+                &active.director_name,
+                &zone_name,
+            ) {
+                sub.set_target_id(session_id);
+                client.send_bytes(sub.to_bytes()).await;
+            }
+        }
 
         // 3a. PRE-WARP emission: content group trio + KickEvent.
         //
@@ -3430,29 +3488,37 @@ impl PacketProcessor {
         // hangs forever — exactly the man0l0 regression. Both subpackets MUST
         // be target_id-tagged or the world-server proxy drops them.
         // (Garlemald-Server #28/#46.)
-        {
-            let mut wipe = crate::packets::send::handshake::build_delete_all_actors(actor_id);
-            wipe.set_target_id(session_id);
-            client.send_bytes(wipe.to_bytes()).await;
-            let mut e2 = crate::packets::send::handshake::build_0xe2(actor_id, 0x10);
-            e2.set_target_id(session_id);
-            client.send_bytes(e2.to_bytes()).await;
-        }
+        if in_place {
+            // The open world's monsters leave the client's view; the
+            // instance's own actors then stream in by proximity like any
+            // others (send_instance_update streams only content-band actors
+            // to a player in an instance).
+            self.world.remove_open_world_monsters(session_id).await;
+        } else {
+            {
+                let mut wipe = crate::packets::send::handshake::build_delete_all_actors(actor_id);
+                wipe.set_target_id(session_id);
+                client.send_bytes(wipe.to_bytes()).await;
+                let mut e2 = crate::packets::send::handshake::build_0xe2(actor_id, 0x10);
+                e2.set_target_id(session_id);
+                client.send_bytes(e2.to_bytes()).await;
+            }
 
-        // Immediate bundle, commit_keep_list = false: the bare wipe above is
-        // load-bearing for the same-zone content transition, so no trailing
-        // keep-list commit is added on top (the pmeteor-verified shape). The
-        // content NPCs ride this bundle.
-        self.world
-            .send_zone_in_bundle(
-                &self.registry,
-                &self.db,
-                self.lua.as_ref(),
-                session_id,
-                spawn_type as u16,
-                /* commit_keep_list */ false,
-            )
-            .await;
+            // Immediate bundle, commit_keep_list = false: the bare wipe above is
+            // load-bearing for the same-zone content transition, so no trailing
+            // keep-list commit is added on top (the pmeteor-verified shape). The
+            // content NPCs ride this bundle.
+            self.world
+                .send_zone_in_bundle(
+                    &self.registry,
+                    &self.db,
+                    self.lua.as_ref(),
+                    session_id,
+                    spawn_type as u16,
+                    /* commit_keep_list */ false,
+                )
+                .await;
+        }
 
         // The bundle has now AddActor'd + state-synced the content NPCs on the
         // client; lift the pre-warp suppression of roster broadcasts
@@ -3654,7 +3720,8 @@ impl PacketProcessor {
             x,
             y,
             z,
-            "DoZoneChangeContent applied (warp + zone-in replay; cinematic deferred to client EventStart)",
+            in_place,
+            "DoZoneChangeContent applied (warp + zone-in replay, or in place; cinematic deferred to client EventStart)",
         );
     }
 
@@ -7830,6 +7897,38 @@ impl PacketProcessor {
         };
         let actor_id = handle.actor_id;
 
+        // Inside an instance entered in place (spawnType 0x16) the player
+        // still stands among the open world's push triggers, the one that
+        // started the duty included; they belong to the world outside and
+        // must not fire (walking back over the duty's own trigger started
+        // a second copy of it).
+        if pkt.event_type == 2
+            && (pkt.owner_actor_id & crate::world_manager::CONTENT_ACTOR_BAND_BIT) == 0
+            && let Some(snap) = self.world.session(session_id).await
+            && snap.destination_spawn_type == 0x16
+            && snap
+                .active_content_script
+                .as_ref()
+                .is_some_and(|a| a.parent_zone_id == snap.current_zone_id)
+        {
+            if let Some(client) = self.world.client(session_id).await {
+                let mut end = crate::packets::send::events::build_end_event(
+                    actor_id,
+                    pkt.owner_actor_id,
+                    &pkt.event_name,
+                    pkt.event_type,
+                );
+                end.set_target_id(session_id);
+                client.send_bytes(end.to_bytes()).await;
+            }
+            tracing::debug!(
+                session = session_id,
+                owner = format!("0x{:08X}", pkt.owner_actor_id),
+                "open-world push ignored inside an in-place instance",
+            );
+            return Ok(());
+        }
+
         // Refresh the gil mirror before any script runs: gil moves through
         // several DB paths (shops, `givegil`, rewards) that don't touch the
         // live Character, and NPC menus gate on `GetCurrentGil()`.
@@ -9444,7 +9543,8 @@ impl PacketProcessor {
         // aetheryte's menu in the same flush as eventAetheryteParentSelect,
         // so the player could not set a home point there.
         if hook_name == "onTalk"
-            && (npc_spec.class_path.contains("/Populace/") || npc_spec.class_path.contains("/Object/"))
+            && (npc_spec.class_path.contains("/Populace/")
+                || npc_spec.class_path.contains("/Object/"))
             && !npc_spec.class_path.ends_with("/PopulaceStandard")
         {
             let registered = {
