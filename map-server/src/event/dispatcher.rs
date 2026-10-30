@@ -455,9 +455,13 @@ async fn dispatch_npc_event_started(
     // ENPC's talk never reaches the NPC script. The base script is inert for
     // townsfolk, but not for a chocobo lender, a shop or the market
     // entrance: Rururaji's rental menu opened over Calamity Cometh's coach
-    // cutscene and cut it short. Talks (1) and pushes (2) both.
+    // cutscene and cut it short. Talks (1) and pushes (2) both. A push the
+    // quest turned on owns the owner even without a marker: Together We
+    // Stand keeps the market entrance's push (flag none) to warp into the
+    // Waking Sands, and the entrance's own menu opening in the same tick
+    // crashed the client when the warp tore it down.
     if (event_type == 1 || event_type == 2)
-        && owner_marked_by_current_quest(&player_handle, actor_class_id).await {
+        && owner_marked_by_current_quest(&player_handle, actor_class_id, event_type == 2).await {
         tracing::debug!(
             owner = owner_actor_id,
             class = actor_class_id,
@@ -883,18 +887,20 @@ async fn owner_claimed_by_current_quest(
 
 /// Whether one of the player's quests has its marker on this NPC: a quest
 /// on offer here, or a taken quest that flagged it (talk, reward and so
-/// on). An NPC a quest merely lists, with no flag, keeps its own talk.
+/// on). An NPC a quest merely lists, with no flag, keeps its own talk;
+/// for a push (`push`), a quest that turned the NPC's push on owns it too.
 async fn owner_marked_by_current_quest(
     player_handle: &crate::runtime::actor_registry::ActorHandle,
     owner_class_id: u32,
+    push: bool,
 ) -> bool {
     let c = player_handle.character.read().await;
     c.quest_offers.contains_key(&owner_class_id)
         || c.quest_journal.slots.iter().flatten().any(|q| {
-            q.state
-                .current
-                .values()
-                .any(|e| e.actor_class_id == owner_class_id && e.quest_flag_type != 0)
+            q.state.current.values().any(|e| {
+                e.actor_class_id == owner_class_id
+                    && (e.quest_flag_type != 0 || (push && e.is_push_enabled))
+            })
         })
 }
 
