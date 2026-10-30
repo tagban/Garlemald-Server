@@ -1,4 +1,5 @@
 require ("global")
+require ("modifiers")
 require ("quests/man/man206")
 
 -- Together We Stand's Moonspore Grove escort (content SimpleContentMan20601,
@@ -43,6 +44,7 @@ function onEventStarted(player, actor, triggerName)
 	-- "You are no longer bound by duty." is the client's own, as the content
 	-- group comes down.
 	player:EndEvent();
+	player:SetMod(modifiersGlobal.MinimumHpLock, 0);
 	player:GetZone():ContentFinished();
 	GetWorldManager():DoZoneChange(player, NINE_IVIES_OUTSIDE[1], nil, 0, 15,
 		NINE_IVIES_OUTSIDE[2], NINE_IVIES_OUTSIDE[3], NINE_IVIES_OUTSIDE[4], NINE_IVIES_OUTSIDE[5]);
