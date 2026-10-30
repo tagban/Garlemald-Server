@@ -1,0 +1,36 @@
+require ("global")
+require ("modifiers")
+require ("quests/com/com0g1")
+
+-- Breaking the Seals' familiar southwest of Quarrymill (content
+-- SimpleContentCom0g101). The duty is entered in place, so there is no
+-- loading veil to lift: the entry kick is simply closed. Once the familiar
+-- falls, Urianger has his parting words (processEventUriangerMore) and the
+-- quest sends you back.
+
+function init()
+	return "/Director/Quest/SimpleQuestBattle/QuestDirectorCom0g101";
+end
+
+function onEventStarted(player, actor, triggerName)
+	-- By id: GetQuest resolves names only for the opening quests.
+	local quest = player:GetQuest(111601);
+
+	player:EndEvent();
+
+	-- A duty that ends any other way purges this coroutine with the content.
+	waitForSignal("battleComplete");
+	wait(2);
+	kickEventContinue(player, actor, "noticeEvent", "noticeEvent");
+	-- processEventUriangerMore fades in after a warp: the warp out below is it.
+	callClientFunction(player, "delegateEvent", player, quest, "processEventUriangerMore");
+	quest:StartSequence(SEQ_030);
+	player:EndEvent();
+	player:SetMod(modifiersGlobal.MinimumHpLock, 0);
+	player:GetZone():ContentFinished();
+	GetWorldManager():DoZoneChange(player, CAMP_OUTSIDE[1], nil, 0, 15,
+		CAMP_OUTSIDE[2], CAMP_OUTSIDE[3], CAMP_OUTSIDE[4], CAMP_OUTSIDE[5]);
+end
+
+function main()
+end

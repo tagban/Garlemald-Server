@@ -9517,6 +9517,76 @@ async fn join_gc_sets_chara_state_and_db() {
     assert_eq!(post_rank, 17);
 }
 
+/// `JoinGC` drained on the runtime path — the one NPC scripts' commands
+/// take (the company officer enlists from its own `onEventStarted`). It
+/// used to fall through as unhandled, so the officer's induction played
+/// but never enlisted anyone.
+#[tokio::test]
+async fn join_gc_from_an_npc_script_enlists() {
+    use crate::actor::Character;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (89, 0, 0, 0, 'Recruit')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    registry
+        .insert(ActorHandle::new(
+            89,
+            ActorKindTag::Player,
+            232,
+            89,
+            Character::new(89),
+        ))
+        .await;
+
+    crate::runtime::quest_apply::apply_runtime_lua_commands(
+        vec![LuaCommand::JoinGC {
+            player_id: 89,
+            gc: crate::actor::gc::GC_MAELSTROM,
+        }],
+        &registry,
+        &db,
+        &world,
+        None,
+    )
+    .await;
+
+    let handle = registry.get(89).await.unwrap();
+    {
+        let c = handle.character.read().await;
+        assert_eq!(c.chara.gc_current, crate::actor::gc::GC_MAELSTROM);
+        assert_eq!(c.chara.gc_rank_limsa, crate::actor::gc::RANK_RECRUIT);
+    }
+    let gc: i64 = db
+        .conn_for_test()
+        .call_db(|c| {
+            c.query_row(r"SELECT gcCurrent FROM characters WHERE id = 89", [], |r| {
+                r.get::<_, i64>(0)
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(gc, crate::actor::gc::GC_MAELSTROM as i64);
+}
+
 /// `apply_promote_gc` happy path: a Recruit (rank 127) enrolled in
 /// the Maelstrom with the seal balance for a Recruit→Pvt3 hop (100
 /// seals) gets promoted to rank 11, has 100 seals deducted, and

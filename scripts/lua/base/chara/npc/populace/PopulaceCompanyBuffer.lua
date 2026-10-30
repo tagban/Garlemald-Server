@@ -27,14 +27,17 @@ function onEventStarted(player, npc, triggerName)
     local playerGC = player.gcCurrent;
     local playerGCRanks = {player.gcRankLimsa, player.gcRankGridania, player.gcRankUldah};
     
-    local choice = callClientFunction(player, "eventTalkWelcome", player, true);
+    local npcGC = gcRep[npc:GetActorClassId()];
+    local isMember = playerGC == npcGC;
+    local choice = callClientFunction(player, "eventTalkWelcome", player, isMember);
     
-    if (choice == 1 and playerGCRanks[playerGC] > 10 and playerGCRanks[playerGC] < 112) then
+    if (not isMember or choice ~= 1) then
+        -- Nothing asked for (or nothing a non-member can have). Recruits
+        -- (rank 127) aren't sanctioned either.
+    elseif (playerGCRanks[playerGC] > 10 and playerGCRanks[playerGC] < 112) then
         callClientFunction(player, "eventTalkBufEffect");
         callClientFunction(player, "eventTalkBufEffectAfter", player);
         -- TODO: Add Sanction buff
-    else
-        player:SendMessage(0x20, "", "Quit hex editing your memory.");
     end
    
     callClientFunction(player, "eventTalkStepBreak"); 

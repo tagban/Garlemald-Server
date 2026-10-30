@@ -29,13 +29,15 @@ function onEventStarted(player, npc, triggerName)
     local playerGCRanks = {player.gcRankLimsa, player.gcRankGridania, player.gcRankUldah};
     local npcGC = gcRep[npc:GetActorClassId()];    
     
-    if (playerGC ~= npcGC and playerGCRanks[playerGC] == 127) then
+    -- gcCurrent 0 is no company; a member's rank is 127 (Recruit) until
+    -- the first promotion.
+    if (playerGC == 0) then
         callClientFunction(player, "eventTalkWelcome");
-    elseif (playerGC == npcGC and playerGCRanks[playerGC] == 127) then
-        callClientFunction(player, "eventTalkProvisional");
-    elseif (playerGC ~= npcGC and playerGCRanks[playerGC] ~= 127) then
+    elseif (playerGC ~= npcGC) then
         callClientFunction(player, "eventTalkExclusive");
-    elseif (playerGC == npcGC and playerGCRanks[playerGC] > 10 and playerGCRanks[playerGC] < 112) then
+    elseif (playerGCRanks[playerGC] == 127) then
+        callClientFunction(player, "eventTalkProvisional");
+    else
         callClientFunction(player, "eventTalkComMember", nil, npc, true);
     end
 

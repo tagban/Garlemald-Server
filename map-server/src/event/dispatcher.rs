@@ -571,6 +571,16 @@ async fn dispatch_npc_event_started(
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
             current_gil: c.chara.gil.max(0) as u32,
+            // Class, level and Grand Company standing: NPC scripts gate on
+            // them (the company officers' enlistment and promotion).
+            current_class: c.chara.class.max(0) as u8,
+            current_level: c.chara.level,
+            current_job: c.chara.current_job as u8,
+            initial_town: c.chara.initial_town,
+            gc_current: c.chara.gc_current,
+            gc_rank_limsa: c.chara.gc_rank_limsa,
+            gc_rank_gridania: c.chara.gc_rank_gridania,
+            gc_rank_uldah: c.chara.gc_rank_uldah,
             active_quests: c
                 .quest_journal
                 .slots
@@ -1007,6 +1017,16 @@ async fn dispatch_director_event_started(
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
             current_gil: c.chara.gil.max(0) as u32,
+            // Class, level and Grand Company standing: NPC scripts gate on
+            // them (the company officers' enlistment and promotion).
+            current_class: c.chara.class.max(0) as u8,
+            current_level: c.chara.level,
+            current_job: c.chara.current_job as u8,
+            initial_town: c.chara.initial_town,
+            gc_current: c.chara.gc_current,
+            gc_rank_limsa: c.chara.gc_rank_limsa,
+            gc_rank_gridania: c.chara.gc_rank_gridania,
+            gc_rank_uldah: c.chara.gc_rank_uldah,
             active_quests: c
                 .quest_journal
                 .slots
