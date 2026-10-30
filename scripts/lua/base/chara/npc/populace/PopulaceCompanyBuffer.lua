@@ -12,6 +12,7 @@ eventTalkStepBreak()                    - Returns to NPC's neutral state
 --]]
 
 require ("global")
+require ("gcseals")
 
 function init(npc)
     return false, false, 0, 0;  
@@ -24,17 +25,17 @@ local gcRep = {
 }
 
 function onEventStarted(player, npc, triggerName)
-    local playerGC = player.gcCurrent;
-    local playerGCRanks = {player.gcRankLimsa, player.gcRankGridania, player.gcRankUldah};
-    
-    local npcGC = gcRep[npc:GetActorClassId()];
-    local isMember = playerGC == npcGC;
+    local npcId = npc:GetActorClassId();
+    if player:HasQuestNpc(npcId) then
+        return;
+    end
+    local npcGC = gcRep[npcId];
+    local isMember = GetSwornGC(player) == npcGC;
     local choice = callClientFunction(player, "eventTalkWelcome", player, isMember);
     
     if (not isMember or choice ~= 1) then
-        -- Nothing asked for (or nothing a non-member can have). Recruits
-        -- (rank 127) aren't sanctioned either.
-    elseif (playerGCRanks[playerGC] > 10 and playerGCRanks[playerGC] < 112) then
+        -- Nothing asked for, or nothing a recruit or outsider can have.
+    elseif (GetGCRank(player, npcGC) < 112) then
         callClientFunction(player, "eventTalkBufEffect");
         callClientFunction(player, "eventTalkBufEffectAfter", player);
         -- TODO: Add Sanction buff

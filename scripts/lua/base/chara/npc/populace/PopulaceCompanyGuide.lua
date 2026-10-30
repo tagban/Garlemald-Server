@@ -13,6 +13,7 @@ eventTalkStepBreak()                            - Returns to NPC's neutral state
 --]]
 
 require ("global")
+require ("gcseals")
 
 function init(npc)
     return false, false, 0, 0;  
@@ -25,23 +26,23 @@ local gcRep = {
 }
 
 function onEventStarted(player, npc, triggerName)
-    local playerGC = player.gcCurrent;
-    local playerGCRanks = {player.gcRankLimsa, player.gcRankGridania, player.gcRankUldah};
-    local npcGC = gcRep[npc:GetActorClassId()];    
-    
-    -- gcCurrent 0 is no company; a member's rank is 127 (Recruit) until
-    -- the first promotion.
-    if (playerGC == 0) then
-        callClientFunction(player, "eventTalkWelcome");
-    elseif (playerGC ~= npcGC) then
+    local npcId = npc:GetActorClassId();
+    if player:HasQuestNpc(npcId) then
+        return;
+    end
+    local npcGC = gcRep[npcId];
+    local sworn = GetSwornGC(player);
+
+    if (sworn == npcGC) then
+        callClientFunction(player, "eventTalkComMember", nil, npc, true);
+    elseif (sworn ~= 0) then
         callClientFunction(player, "eventTalkExclusive");
-    elseif (playerGCRanks[playerGC] == 127) then
+    elseif (IsGCRecruit(player, npcGC)) then
         callClientFunction(player, "eventTalkProvisional");
     else
-        callClientFunction(player, "eventTalkComMember", nil, npc, true);
+        callClientFunction(player, "eventTalkWelcome");
     end
 
     callClientFunction(player, "eventTalkStepBreak"); 
     player:EndEvent();
 end
-

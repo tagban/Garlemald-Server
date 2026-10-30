@@ -17,8 +17,8 @@ only once the Archon Urianger, who has been burning glyphs into the trees,
 is caught; her scouts place him southwest of Quarrymill. Urianger sets a
 familiar on you (a duty entered in place, SimpleContentCom0g101) and
 vanishes; Ailith accepts your report, swears a sealed oath to the wood, and
-Fulke takes it and invites you to enlist: talking to him again inducts you
-(PopulaceCompanyOfficer).
+Fulke takes it and invites you to enlist: he offers the interim enlistment
+next (Com0g2).
 
 The client script (com0g1) names the events; seed 122 holds the cast, the
 glyph-site trigger and the familiar.

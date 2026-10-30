@@ -33,6 +33,7 @@ eventTalkStepBreak()            -- Returns NPC to their starting direction
 --]]
 
 require ("global")
+require ("gcseals")
 require ("shop")
 
 function init(npc)
@@ -452,15 +453,20 @@ shopInfo = { -- [index] = { itemID, itemQuality, itemQuantity, itemCost, gcRank,
 
 function onEventStarted(player, npc, triggerName)
     skipGCcheck = 0; -- 0 No,  1 Yes
-    playerGC = player.gcCurrent;
-    playerGCSeal = 1000200 + playerGC;
-    -- Pull the live rank from the snapshot — same `playerGCRanks`
-    -- index trick PopulaceCompanyOfficer.lua uses.
-    local playerGCRanks = { player.gcRankLimsa, player.gcRankGridania, player.gcRankUldah };
-    playerCurrentRank = playerGCRanks[playerGC] or 0;
     npcId = npc:GetActorClassId();
+    -- A quest that uses the quartermaster (the recruits' seal briefing)
+    -- answers the talk itself.
+    if player:HasQuestNpc(npcId) then
+        return;
+    end
+    -- The shop serves this company's recruits and sworn members. Recruits
+    -- buy at rank 0: rank-gated goods wait for the oath.
+    playerGC = gcOfficer[npcId];
+    playerGCSeal = 1000200 + playerGC;
+    local sworn = GetSwornGC(player) == playerGC;
+    playerCurrentRank = sworn and GetGCRank(player, playerGC) or 0;
 
-    if (playerGC == gcOfficer[npcId] or  skipGCcheck == 1) then
+    if (sworn or IsGCRecruit(player, playerGC) or skipGCcheck == 1) then
         callClientFunction(player, "eventTalkPreJoin");
         --player:SendMessage(0x20, "", "[Info]: Client takes awhile to load GC shops");
         while (true) do

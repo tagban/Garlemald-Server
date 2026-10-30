@@ -523,6 +523,18 @@ pub struct Character {
 }
 
 impl Character {
+    /// Classes of the NPCs the player's quests answer for: the givers of
+    /// quests on offer and the NPCs taken quests have marked.
+    pub fn quest_npc_classes(&self) -> Vec<u32> {
+        let mut classes: Vec<u32> = self.quest_offers.keys().copied().collect();
+        for q in self.quest_journal.slots.iter().flatten() {
+            classes.extend(q.state.current.keys().copied());
+        }
+        classes.sort_unstable();
+        classes.dedup();
+        classes
+    }
+
     pub fn new(actor_id: u32) -> Self {
         Self {
             base: BaseActor::new(actor_id),

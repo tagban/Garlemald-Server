@@ -608,6 +608,7 @@ async fn dispatch_npc_event_started(
                 })
                 .collect(),
             completed_quests: c.quest_journal.iter_completed().collect(),
+            quest_npcs: c.quest_npc_classes(),
             ..Default::default()
         }
     };
@@ -1054,6 +1055,7 @@ async fn dispatch_director_event_started(
                 })
                 .collect(),
             completed_quests: c.quest_journal.iter_completed().collect(),
+            quest_npcs: c.quest_npc_classes(),
             ..Default::default()
         }
     };

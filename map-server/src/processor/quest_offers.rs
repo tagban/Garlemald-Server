@@ -62,6 +62,54 @@ fn prerequisites(quest_id: u32, prerequisite: u32) -> Vec<u32> {
     }
 }
 
+/// Grand Company quests by the company's standing. `com0x1`-`com0x4`,
+/// `com0x6` and the oath `com0x7` are for recruits (their prerequisites
+/// chain from the test quest); `com0x5` (the Corporal-to-Sergeant gate),
+/// `com5*` and `gc*` are for sworn members. Anyone sworn to another company
+/// is offered none of this one's, and the oath isn't offered twice.
+fn company_gate(script_name: &str, chara: &crate::actor::CharaState) -> bool {
+    use crate::actor::gc;
+    let (nation, kind) = if let Some(rest) = script_name.strip_prefix("com") {
+        (
+            rest.chars().nth(1),
+            rest.get(0..1).unwrap_or("").to_string() + rest.get(2..3).unwrap_or(""),
+        )
+    } else if let Some(rest) = script_name.strip_prefix("gc") {
+        (rest.chars().next(), "gc".to_string())
+    } else {
+        return true;
+    };
+    let company = match nation {
+        Some('l') => gc::GC_MAELSTROM,
+        Some('g') => gc::GC_TWIN_ADDER,
+        Some('u') => gc::GC_IMMORTAL_FLAMES,
+        _ => return true,
+    };
+    let rank_in = |g: u8| match g {
+        gc::GC_MAELSTROM => chara.gc_rank_limsa,
+        gc::GC_TWIN_ADDER => chara.gc_rank_gridania,
+        gc::GC_IMMORTAL_FLAMES => chara.gc_rank_uldah,
+        _ => 0,
+    };
+    let sworn_to =
+        if gc::is_valid_gc(chara.gc_current) && gc::is_sworn_rank(rank_in(chara.gc_current)) {
+            chara.gc_current
+        } else {
+            gc::GC_NONE
+        };
+    if sworn_to != gc::GC_NONE && sworn_to != company {
+        return false;
+    }
+    let sworn_here = sworn_to == company;
+    match kind.as_str() {
+        "07" => !sworn_here,
+        "05" => sworn_here && rank_in(company) >= 17,
+        "gc" => sworn_here,
+        k if k.starts_with('5') => sworn_here,
+        _ => true,
+    }
+}
+
 impl PacketProcessor {
     /// Rebuild the player's offers and put the markers up (or take stale
     /// ones down).
@@ -83,6 +131,7 @@ impl PacketProcessor {
                     let name = m.class_name.to_lowercase();
                     let needs = prerequisites(m.id, m.prerequisite);
                     is_offerable(&name, !needs.is_empty())
+                        && company_gate(&name, &c.chara)
                         && !journal.has(m.id)
                         && !journal.is_completed(m.id)
                         && level >= m.min_level
@@ -267,5 +316,44 @@ mod tests {
         assert_eq!(prerequisites(110013, 0), vec![110004, 110008, 110012]);
         assert_eq!(prerequisites(110011, 110010), vec![110010]);
         assert!(prerequisites(110001, 0).is_empty());
+    }
+
+    fn standing(gc: u8, limsa: u8, gridania: u8, uldah: u8) -> crate::actor::CharaState {
+        crate::actor::CharaState {
+            gc_current: gc,
+            gc_rank_limsa: limsa,
+            gc_rank_gridania: gridania,
+            gc_rank_uldah: uldah,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn company_quests_follow_the_players_standing() {
+        // No company yet: the test quests and the recruit arc, not the
+        // members' quests.
+        let none = standing(0, 127, 127, 127);
+        assert!(company_gate("com0l1", &none));
+        assert!(company_gate("com0g2", &none));
+        assert!(company_gate("com0u7", &none));
+        assert!(!company_gate("com0l5", &none));
+        assert!(!company_gate("com5g0", &none));
+        assert!(!company_gate("gcu101", &none));
+        // A recruit (127) of one company may still try the others.
+        let recruit = standing(1, 127, 127, 127);
+        assert!(company_gate("com0g1", &recruit));
+        assert!(company_gate("com0l7", &recruit));
+        // Sworn to the Maelstrom as a Corporal (17).
+        let sworn = standing(1, 17, 127, 127);
+        assert!(company_gate("com0l5", &sworn));
+        assert!(company_gate("com5l0", &sworn));
+        assert!(company_gate("gcl101", &sworn));
+        assert!(!company_gate("com0l7", &sworn));
+        assert!(!company_gate("com0g1", &sworn));
+        assert!(!company_gate("gcu101", &sworn));
+        // The Sergeant gate needs Corporal first.
+        assert!(!company_gate("com0l5", &standing(1, 15, 127, 127)));
+        // Other quests are untouched.
+        assert!(company_gate("man300", &sworn));
     }
 }
