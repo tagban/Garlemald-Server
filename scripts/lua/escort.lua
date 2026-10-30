@@ -147,6 +147,7 @@ end
 local function fail(duty, owner, area, state)
 	state.done = true;
 	owner:GetQuest(duty.quest):StartSequence(duty.failSequence);
+	owner:SetMod(modifiersGlobal.MinimumHpLock, 0);
 	area:ContentFinished();
 	-- ContentFinished also purges the director's coroutine parked on a
 	-- leg signal, so a retry can't fire a stale arrival.
