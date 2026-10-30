@@ -450,6 +450,20 @@ async fn dispatch_npc_event_started(
     // semantics from round 2 hold on both release arms.
     let quest_claimed = owner_claimed_by_current_quest(&player_handle, actor_class_id).await;
 
+    // A quest whose marker is on this NPC (it offers a quest, or a taken
+    // quest flagged it) owns the talk outright, as in Meteor, where a quest
+    // ENPC's talk never reaches the NPC script. The base script is inert for
+    // townsfolk, but not for a chocobo lender or a shop: Rururaji's rental
+    // menu opened over Calamity Cometh's coach cutscene and cut it short.
+    if event_type == 1 && owner_marked_by_current_quest(&player_handle, actor_class_id).await {
+        tracing::debug!(
+            owner = owner_actor_id,
+            class = actor_class_id,
+            "NPC onEventStarted skipped — a current quest's marker is on this owner",
+        );
+        return;
+    }
+
     // In a private area (the openings' past cities) the owner shares the
     // player's area, and its override is that area's
     // (`unique/<zone>/PrivateArea/<area>_<level>/...`), never the present
@@ -862,6 +876,23 @@ async fn owner_claimed_by_current_quest(
                 .current
                 .values()
                 .any(|e| e.actor_class_id == owner_class_id)
+        })
+}
+
+/// Whether one of the player's quests has its marker on this NPC: a quest
+/// on offer here, or a taken quest that flagged it (talk, reward and so
+/// on). An NPC a quest merely lists, with no flag, keeps its own talk.
+async fn owner_marked_by_current_quest(
+    player_handle: &crate::runtime::actor_registry::ActorHandle,
+    owner_class_id: u32,
+) -> bool {
+    let c = player_handle.character.read().await;
+    c.quest_offers.contains_key(&owner_class_id)
+        || c.quest_journal.slots.iter().flatten().any(|q| {
+            q.state
+                .current
+                .values()
+                .any(|e| e.actor_class_id == owner_class_id && e.quest_flag_type != 0)
         })
 }
 
