@@ -291,6 +291,11 @@ pub enum LuaCommand {
         /// `currentParty:AddMember(actor.actorId)` calls during the
         /// same `onCreate` drain resolve correctly.
         expected_actor_id: u32,
+        /// Look and name for this spawn instead of the pool class's: an
+        /// escort's Path companion wears the player's own companion
+        /// (`SNPC_START - 1 + skin`) and nickname.
+        appearance_class_id: Option<u32>,
+        display_name: Option<String>,
     },
     DespawnActor {
         zone_id: u32,

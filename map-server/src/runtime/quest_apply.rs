@@ -913,8 +913,12 @@ pub async fn apply_runtime_lua_command(
                     .save_snpc(player_id, nickname, skin, personality, coordinate)
                     .await
                 {
-                    Ok(()) => tracing::info!(player = player_id, skin, personality, "SetSNpc applied"),
-                    Err(e) => tracing::warn!(player = player_id, err = %e, "SetSNpc: DB persist failed"),
+                    Ok(()) => {
+                        tracing::info!(player = player_id, skin, personality, "SetSNpc applied")
+                    }
+                    Err(e) => {
+                        tracing::warn!(player = player_id, err = %e, "SetSNpc: DB persist failed")
+                    }
                 }
             }
             true

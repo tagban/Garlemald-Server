@@ -461,7 +461,8 @@ async fn dispatch_npc_event_started(
     // Waking Sands, and the entrance's own menu opening in the same tick
     // crashed the client when the warp tore it down.
     if (event_type == 1 || event_type == 2)
-        && owner_marked_by_current_quest(&player_handle, actor_class_id, event_type == 2).await {
+        && owner_marked_by_current_quest(&player_handle, actor_class_id, event_type == 2).await
+    {
         tracing::debug!(
             owner = owner_actor_id,
             class = actor_class_id,

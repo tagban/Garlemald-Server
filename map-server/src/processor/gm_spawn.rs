@@ -269,7 +269,7 @@ impl PacketProcessor {
             let c = handle.character.read().await;
             (c.chara.current_target, c.base.position())
         };
-        let mut monsters: Vec<(f32, u32)> = {
+        let monsters: Vec<(f32, u32)> = {
             let zone = zone_arc.read().await;
             zone.core
                 .actors_around(handle.actor_id, KILL_RANGE)
@@ -281,6 +281,20 @@ impl PacketProcessor {
                 })
                 .collect()
         };
+        // Allies (an escort's charge, the openings' companions) are battle
+        // npcs on the zone grid too; they're not monsters to kill.
+        let mut hostile = Vec::with_capacity(monsters.len());
+        for m in monsters {
+            let ally = self
+                .registry
+                .get(m.1)
+                .await
+                .is_some_and(|h| h.kind == crate::runtime::actor_registry::ActorKindTag::Ally);
+            if !ally {
+                hostile.push(m);
+            }
+        }
+        let mut monsters = hostile;
         monsters.sort_by(|a, b| a.0.total_cmp(&b.0));
         let victims: Vec<u32> = if all {
             monsters.iter().map(|m| m.1).collect()

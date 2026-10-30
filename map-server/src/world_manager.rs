@@ -4069,6 +4069,47 @@ impl WorldManager {
     /// (100) exceeds the escort's ENGAGE_RADIUS (18) + PLAYER_LEASH (15)
     /// and the controller's MAX_DETECT_DISTANCE (20), so a mob always
     /// renders before it can reach or aggro the player. (#46.)
+    /// Takes every open-world monster the client has spawned out of its
+    /// view (populace and quest NPCs stay, as in [`Self::send_instance_update`]).
+    /// For a content instance entered in place, where no zone-in wipe
+    /// clears the public zone's monsters first.
+    pub async fn remove_open_world_monsters(&self, session_id: u32) {
+        let Some(session) = self.session(session_id).await else {
+            return;
+        };
+        let Some(zone_arc) = self.zone(session.current_zone_id).await else {
+            return;
+        };
+        let Some(client) = self.client(session_id).await else {
+            return;
+        };
+        let ids: Vec<u32> = {
+            let z = zone_arc.read().await;
+            session
+                .actor_instance_list
+                .iter()
+                .copied()
+                .filter(|id| (id & CONTENT_ACTOR_BAND_BIT) == 0)
+                .filter(|id| {
+                    z.core
+                        .find_actor(*id)
+                        .is_some_and(|a| matches!(a.kind, crate::zone::area::ActorKind::BattleNpc))
+                })
+                .collect()
+        };
+        for id in &ids {
+            let mut sub = crate::packets::send::actor::build_remove_actor(*id);
+            sub.set_target_id(session_id);
+            client.send_bytes(sub.to_bytes()).await;
+        }
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&session_id) {
+            for id in &ids {
+                s.actor_instance_list.remove(id);
+            }
+        }
+    }
+
     pub async fn send_instance_update(
         &self,
         registry: &crate::runtime::actor_registry::ActorRegistry,
@@ -4349,6 +4390,7 @@ impl WorldManager {
             session = session_id,
             zone = session.current_zone_id,
             streamed = added.len(),
+            ids = ?added.iter().map(|id| format!("0x{id:08X}")).collect::<Vec<_>>(),
             "send_instance_update: streamed newly-in-range actors",
         );
     }
