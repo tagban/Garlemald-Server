@@ -36,13 +36,16 @@ fn givers() -> &'static Mutex<HashMap<u32, Vec<QuestEnpc>>> {
     GIVERS.get_or_init(Default::default)
 }
 
-/// Quests that are handed over by the story rather than offered: the main
-/// scenario (`Man*`, replaced in-script by the next one), the default-talk
-/// carriers (`Dft*`) and the opening tutorials (`Trl*`).
-fn is_offerable(script_name: &str) -> bool {
-    !(script_name.starts_with("man")
-        || script_name.starts_with("dft")
-        || script_name.starts_with("trl"))
+/// Whether a quest is offered at its giver. The default-talk carriers
+/// (`Dft*`) and the opening tutorials (`Trl*`) never are. The main scenario
+/// (`Man*`) is offered only where it follows another quest: the opening
+/// quests replace themselves in-script, but from the level 8 quest on, each
+/// nation's story is given by its giver once the quest before it is done.
+fn is_offerable(script_name: &str, prerequisite: u32) -> bool {
+    if script_name.starts_with("dft") || script_name.starts_with("trl") {
+        return false;
+    }
+    !script_name.starts_with("man") || prerequisite != 0
 }
 
 impl PacketProcessor {
@@ -64,7 +67,7 @@ impl PacketProcessor {
                 .iter()
                 .filter(|m| {
                     let name = m.class_name.to_lowercase();
-                    is_offerable(&name)
+                    is_offerable(&name, m.prerequisite)
                         && !journal.has(m.id)
                         && !journal.is_completed(m.id)
                         && level >= m.min_level
@@ -234,11 +237,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn story_quests_are_not_offered() {
-        assert!(!is_offerable("man0l1"));
-        assert!(!is_offerable("dftsea"));
-        assert!(!is_offerable("trl0l1"));
-        assert!(is_offerable("etc1l1"));
-        assert!(is_offerable("wld0l1"));
+    fn story_quests_are_offered_only_after_a_prerequisite() {
+        assert!(!is_offerable("man0l1", 0));
+        assert!(is_offerable("man1u0", 110010));
+        assert!(!is_offerable("dftsea", 0));
+        assert!(!is_offerable("dftsea", 110001));
+        assert!(!is_offerable("trl0l1", 0));
+        assert!(is_offerable("etc1l1", 0));
+        assert!(is_offerable("wld0l1", 0));
     }
 }
