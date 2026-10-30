@@ -113,6 +113,13 @@ pub async fn fire_on_kill_bnpc(
             guardian: c.chara.guardian,
             birth_month: c.chara.birthday_month,
             birth_day: c.chara.birthday_day,
+            current_class: c.chara.class.max(0) as u8,
+            current_level: c.chara.level,
+            current_job: c.chara.current_job as u8,
+            gc_current: c.chara.gc_current,
+            gc_rank_limsa: c.chara.gc_rank_limsa,
+            gc_rank_gridania: c.chara.gc_rank_gridania,
+            gc_rank_uldah: c.chara.gc_rank_uldah,
             ..Default::default()
         };
         (ids, snap)

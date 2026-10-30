@@ -69,6 +69,33 @@ pub async fn apply_runtime_lua_command(
 ) -> Handled {
     use LuaCommandKind as LC;
     match cmd {
+        // Grand Company standing: the company officers enlist and promote
+        // from their own scripts, whose commands drain here.
+        LC::JoinGC { player_id, gc } => {
+            crate::runtime::gc_apply::apply_join_gc(registry, db, world, player_id, gc).await;
+            true
+        }
+        LC::SetGCRank {
+            player_id,
+            gc,
+            rank,
+        } => {
+            crate::runtime::gc_apply::apply_set_gc_rank(registry, db, world, player_id, gc, rank)
+                .await;
+            true
+        }
+        LC::AddSeals {
+            player_id,
+            gc,
+            amount,
+        } => {
+            crate::runtime::gc_apply::apply_add_seals(db, player_id, gc, amount).await;
+            true
+        }
+        LC::PromoteGC { player_id, gc } => {
+            crate::runtime::gc_apply::apply_promote_gc(registry, db, world, player_id, gc).await;
+            true
+        }
         LC::AddQuest {
             player_id,
             quest_id,
@@ -6614,6 +6641,15 @@ pub async fn apply_quest_on_notice(
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
             current_gil: c.chara.gil.max(0) as u32,
+            // Class, level and Grand Company standing: quest rewards
+            // (`AddExp` on `state_mainSkill[0]`) and company gates read them.
+            current_class: c.chara.class.max(0) as u8,
+            current_level: c.chara.level,
+            current_job: c.chara.current_job as u8,
+            gc_current: c.chara.gc_current,
+            gc_rank_limsa: c.chara.gc_rank_limsa,
+            gc_rank_gridania: c.chara.gc_rank_gridania,
+            gc_rank_uldah: c.chara.gc_rank_uldah,
             active_quests: c
                 .quest_journal
                 .slots
@@ -7186,6 +7222,15 @@ async fn fire_quest_npc_hook_via_command(
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
             current_gil: c.chara.gil.max(0) as u32,
+            // Class, level and Grand Company standing: quest rewards
+            // (`AddExp` on `state_mainSkill[0]`) and company gates read them.
+            current_class: c.chara.class.max(0) as u8,
+            current_level: c.chara.level,
+            current_job: c.chara.current_job as u8,
+            gc_current: c.chara.gc_current,
+            gc_rank_limsa: c.chara.gc_rank_limsa,
+            gc_rank_gridania: c.chara.gc_rank_gridania,
+            gc_rank_uldah: c.chara.gc_rank_uldah,
             active_quests: c
                 .quest_journal
                 .slots
@@ -7407,6 +7452,15 @@ pub async fn fire_quest_on_talk_via_command(
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
             current_gil: c.chara.gil.max(0) as u32,
+            // Class, level and Grand Company standing: quest rewards
+            // (`AddExp` on `state_mainSkill[0]`) and company gates read them.
+            current_class: c.chara.class.max(0) as u8,
+            current_level: c.chara.level,
+            current_job: c.chara.current_job as u8,
+            gc_current: c.chara.gc_current,
+            gc_rank_limsa: c.chara.gc_rank_limsa,
+            gc_rank_gridania: c.chara.gc_rank_gridania,
+            gc_rank_uldah: c.chara.gc_rank_uldah,
             active_quests: c
                 .quest_journal
                 .slots
@@ -7604,6 +7658,15 @@ async fn fire_quest_hook(
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
             current_gil: c.chara.gil.max(0) as u32,
+            // Class, level and Grand Company standing: quest rewards
+            // (`AddExp` on `state_mainSkill[0]`) and company gates read them.
+            current_class: c.chara.class.max(0) as u8,
+            current_level: c.chara.level,
+            current_job: c.chara.current_job as u8,
+            gc_current: c.chara.gc_current,
+            gc_rank_limsa: c.chara.gc_rank_limsa,
+            gc_rank_gridania: c.chara.gc_rank_gridania,
+            gc_rank_uldah: c.chara.gc_rank_uldah,
             active_quests: c
                 .quest_journal
                 .slots
