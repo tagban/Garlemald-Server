@@ -453,9 +453,11 @@ async fn dispatch_npc_event_started(
     // A quest whose marker is on this NPC (it offers a quest, or a taken
     // quest flagged it) owns the talk outright, as in Meteor, where a quest
     // ENPC's talk never reaches the NPC script. The base script is inert for
-    // townsfolk, but not for a chocobo lender or a shop: Rururaji's rental
-    // menu opened over Calamity Cometh's coach cutscene and cut it short.
-    if event_type == 1 && owner_marked_by_current_quest(&player_handle, actor_class_id).await {
+    // townsfolk, but not for a chocobo lender, a shop or the market
+    // entrance: Rururaji's rental menu opened over Calamity Cometh's coach
+    // cutscene and cut it short. Talks (1) and pushes (2) both.
+    if (event_type == 1 || event_type == 2)
+        && owner_marked_by_current_quest(&player_handle, actor_class_id).await {
         tracing::debug!(
             owner = owner_actor_id,
             class = actor_class_id,

@@ -70,12 +70,21 @@ MIN_TATARU_WAIT_TIME 	= 20;
 
 function onStart(player, quest)	
 	quest:StartSequence(SEQ_000);
+	-- Accepting at the market entrance already played the arrival scene.
+	quest:GetData():SetFlag(FLAG_VISITED);
 end
 
 function onFinish(player, quest)
 end
 
 function onStateChange(player, quest, sequence)
+	-- Offered at the Ul'dah market entrance once any nation's level 13
+	-- quest is done and the player is level 18: walking in accepts it.
+	if (sequence == SEQ_ACCEPT) then
+		quest:SetENpc(MARKET_ENTRENCE, QFLAG_PUSH, false, true);
+		return;
+	end
+
 	local data = quest:GetData();
 	quest:SetTimeUpdate(false);
 	
@@ -293,7 +302,13 @@ function onPush(player, quest, npc)
 	local classId = npc:GetActorClassId();
 	
 	if (classId == MARKET_ENTRENCE) then
-		if (sequence == SEQ_000 and not data:GetFlag(FLAG_VISITED)) then
+		if (sequence == SEQ_ACCEPT) then
+			callClientFunction(player, "delegateEvent", player, quest, "pE00", "???", 1, 1, 1, player:GetInitialTown());
+			player:EndEvent();
+			player:AcceptQuest(quest, true);
+			GetWorldManager():DoZoneChange(player, 181, "PrivateAreaMasterPast", 0, 15, -205.25, 0, -160, 1.55);
+			return;
+		elseif (sequence == SEQ_000 and not data:GetFlag(FLAG_VISITED)) then
 			data:SetFlag(FLAG_VISITED);
 			callClientFunction(player, "delegateEvent", player, quest, "pE00", "???", 1, 1, 1, player:GetInitialTown());
 		elseif (sequence == SEQ_000 and not data:GetFlag(FLAG_VISITED)) then
