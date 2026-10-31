@@ -407,6 +407,32 @@ impl Character {
         }
     }
 
+    /// Food / medicine bonuses on top of gear and derivation: each adds
+    /// `percent` of the stat as it stands, up to `cap`. Stats with nothing
+    /// to scale (EXP bonus) take the percent itself. Clears the buff once
+    /// its status is gone.
+    pub fn apply_food_bonuses(&mut self) {
+        let Some(food) = &self.food else {
+            return;
+        };
+        if !self.status_effects.has(food.status_id) {
+            self.food = None;
+            return;
+        }
+        for &(mod_id, percent, cap) in &food.bonuses {
+            let base = self.chara.mods.get_raw(mod_id);
+            let mut delta = if base > 0.0 {
+                (base * percent as f64 / 100.0).floor()
+            } else {
+                percent as f64
+            };
+            if cap > 0 {
+                delta = delta.min(cap as f64);
+            }
+            self.chara.mods.add_raw(mod_id, delta);
+        }
+    }
+
     /// Apply weapon attributes from the equipped main-hand (and
     /// offhand, for dual-wield) onto the character's modifier map.
     ///
@@ -723,6 +749,31 @@ mod recalc_tests {
         assert_eq!(c.chara.max_mp, 300);
         assert_eq!(c.chara.mp, 300);
         assert_eq!(c.chara.mods.get(Modifier::HitCount), 1.0);
+    }
+
+    #[test]
+    fn food_bonuses_scale_cap_and_end_with_the_status() {
+        let mut c = Character::new(1);
+        let mut outbox = crate::status::StatusOutbox::new();
+        let well_fed = crate::status::StatusEffect::new(1, 223_999, 0.0, 0, 1800, 0, 0);
+        c.status_effects
+            .add_status_effect(well_fed, 1, 0, 30328, &mut outbox);
+        // Boiled Egg: HP +15% (up to 30), EXP +3%.
+        c.food = Some(crate::actor::FoodBuff {
+            status_id: 223_999,
+            bonuses: vec![(Modifier::Hp as u32, 15, 30), (62, 3, 0)],
+        });
+        c.chara.mods.set(Modifier::Hp, 590.0);
+        c.apply_food_bonuses();
+        assert_eq!(c.chara.mods.get(Modifier::Hp), 620.0);
+        assert_eq!(c.chara.mods.get_raw(62), 3.0);
+
+        c.status_effects
+            .remove_status_effect(223_999, 30331, false, &mut outbox);
+        c.chara.mods.set(Modifier::Hp, 590.0);
+        c.apply_food_bonuses();
+        assert_eq!(c.chara.mods.get(Modifier::Hp), 590.0);
+        assert!(c.food.is_none());
     }
 
     #[test]

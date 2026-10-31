@@ -1,0 +1,3 @@
+name = "bugreport"
+version = "1.0"
+description = "Player bug reports: !bug <what happened> files the character's place and the player's note, the client's bug-report key adds a screenshot and its logs (POST /bug/attach), and the web server publishes each report as an issue in a private GitHub repository and to a Discord channel"

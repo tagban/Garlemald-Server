@@ -55,6 +55,12 @@ pub const SEAL_FLAME: u32 = 1_000_203;
 /// retail default on fresh characters.
 pub const RANK_RECRUIT: u8 = 127;
 
+/// A sworn member's rank: Private Third Class (11) up. Recruits (127) have
+/// joined provisionally, through the company's `Com0x2`.
+pub fn is_sworn_rank(rank: u8) -> bool {
+    (11..RANK_RECRUIT).contains(&rank)
+}
+
 pub fn is_valid_gc(gc: u8) -> bool {
     matches!(gc, GC_MAELSTROM | GC_TWIN_ADDER | GC_IMMORTAL_FLAMES)
 }
@@ -167,17 +173,13 @@ pub fn gc_promotion_cost(current: u8) -> i32 {
 /// shipped with a dedicated story quest the player had to complete
 /// before the dialog branch would even offer the promotion option.
 ///
-/// Quest ids sourced from `ffxiv_classic_wiki_context.md`'s
-/// `gamedata_quests` dump cross-checked against the
-/// `mirke-menagerie-context.md` GC story transcripts:
+/// Quest ids from the officers' own lines in the 1.23b client (text sheet
+/// 6797: "Completion of the quest ... is required for promotion to ..."):
 ///
 /// * **Sergeant gate** (17 → 21):
-///   * Maelstrom — "An Officer and a Wise Man" (`Com0l5`, 111405) —
-///     the Brooks confrontation the Mirke text at line 16921 sets up.
-///   * Twin Adder — "Their Finest Hour" (`Com0g5`, 111605) — the
-///     Patch 1.19 ceremony arc at line 19509.
-///   * Immortal Flames — "Burning Man" (`Com0u5`, 111805) — third
-///     in the parallel `Com0u_` series, same pattern as the other GCs.
+///   * Maelstrom — "The Weakest Link" (`Gcl701`, 111428).
+///   * Twin Adder — "You Don't Have the Rite" (`Gcg701`, 111628).
+///   * Immortal Flames — "Gore a Lizard, Hurry" (`Gcu701`, 111828).
 /// * **Lieutenant gate** (27 → 31):
 ///   * Maelstrom — "Patrol, Interrupted" (`Gcl702`, 111434) — the
 ///     Aquamarine Cross trial at Mistbeard Cove (Mirke line 18335)
@@ -192,9 +194,9 @@ pub fn gc_promotion_cost(current: u8) -> i32 {
 pub fn tier_shift_quest(current_rank: u8, gc: u8) -> Option<u32> {
     match (current_rank, gc) {
         // Sergeant promotion gate — Corporal (17) → Sergeant Third Class (21).
-        (17, GC_MAELSTROM) => Some(111_405),
-        (17, GC_TWIN_ADDER) => Some(111_605),
-        (17, GC_IMMORTAL_FLAMES) => Some(111_805),
+        (17, GC_MAELSTROM) => Some(111_428),
+        (17, GC_TWIN_ADDER) => Some(111_628),
+        (17, GC_IMMORTAL_FLAMES) => Some(111_828),
         // Lieutenant commission gate — Chief Sergeant (27) → Second Lieutenant (31).
         (27, GC_MAELSTROM) => Some(111_434),
         (27, GC_TWIN_ADDER) => Some(111_634),
@@ -265,9 +267,9 @@ mod tests {
     #[test]
     fn tier_shift_quest_returns_per_gc_quest_at_petty_officer_and_lieutenant_gates() {
         // Sergeant gate (17 → 21) — `Com0_5` series.
-        assert_eq!(tier_shift_quest(17, GC_MAELSTROM), Some(111_405));
-        assert_eq!(tier_shift_quest(17, GC_TWIN_ADDER), Some(111_605));
-        assert_eq!(tier_shift_quest(17, GC_IMMORTAL_FLAMES), Some(111_805));
+        assert_eq!(tier_shift_quest(17, GC_MAELSTROM), Some(111_428));
+        assert_eq!(tier_shift_quest(17, GC_TWIN_ADDER), Some(111_628));
+        assert_eq!(tier_shift_quest(17, GC_IMMORTAL_FLAMES), Some(111_828));
         // Lieutenant gate (27 → 31) — `Gc[lgu]702` series.
         assert_eq!(tier_shift_quest(27, GC_MAELSTROM), Some(111_434));
         assert_eq!(tier_shift_quest(27, GC_TWIN_ADDER), Some(111_634));

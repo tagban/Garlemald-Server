@@ -26,6 +26,7 @@
 pub mod bitfield;
 pub mod bitstream;
 pub mod blowfish;
+pub mod bug_reports;
 pub mod db;
 pub mod error;
 pub mod hash_table;
@@ -33,12 +34,15 @@ pub mod logging;
 pub mod luaparam;
 pub mod math;
 pub mod migrations;
+pub mod modules;
 pub mod packet;
 pub mod packet_diagnostics;
 pub mod packet_log;
 pub mod server_list;
+pub mod settings;
 pub mod smoke;
 pub mod subpacket;
+pub mod test_tmp;
 pub mod utils;
 
 pub use blowfish::Blowfish;

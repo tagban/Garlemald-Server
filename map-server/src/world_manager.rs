@@ -115,6 +115,27 @@ pub fn build_director_spawn_subpackets(
     class_name: &str,
     zone_name: &str,
 ) -> Vec<common::subpacket::SubPacket> {
+    build_director_spawn_subpackets_with(
+        actor_id,
+        zone_actor_id,
+        class_path,
+        class_name,
+        zone_name,
+        &[],
+    )
+}
+
+/// [`build_director_spawn_subpackets`] with the values the director
+/// script's `init` returns after its class path (Meteor appends them to
+/// the ActorInstantiate params), e.g. a guildleve director's leve id.
+pub fn build_director_spawn_subpackets_with(
+    actor_id: u32,
+    zone_actor_id: u32,
+    class_path: &str,
+    class_name: &str,
+    zone_name: &str,
+    init_params: &[common::luaparam::LuaParam],
+) -> Vec<common::subpacket::SubPacket> {
     // Strip the path portion to the leaf class name. Mirror of pmeteor
     // `Director.cs`:
     //   className = classPath.Substring(classPath.LastIndexOf("/") + 1)
@@ -141,7 +162,7 @@ pub fn build_director_spawn_subpackets(
         class_lower.truncate(max_class_len);
     }
     let director_actor_name = format!("{class_lower}_{zone_short}_0@{zone_actor_id:03X}00");
-    let director_bind_params = vec![
+    let mut director_bind_params = vec![
         common::luaparam::LuaParam::String(class_path.to_string()),
         common::luaparam::LuaParam::False,
         common::luaparam::LuaParam::False,
@@ -149,6 +170,7 @@ pub fn build_director_spawn_subpackets(
         common::luaparam::LuaParam::False,
         common::luaparam::LuaParam::False,
     ];
+    director_bind_params.extend_from_slice(init_params);
     vec![
         tx::actor::build_add_actor(actor_id, 0),
         // C# `Director` ctor registers three notice-event conditions:
@@ -489,10 +511,21 @@ pub fn build_retainer_spawn_bundle(
 
 /// Radius (yalms) of the continuous actor-streaming scan around the
 /// player. pmeteor `Player.SendInstanceUpdate` scans
-/// `GetActorsAroundActor(this, 50)` in BOTH `zone` and `zone2`
-/// (Player.cs:2285-2288), and `send_zone_in_bundle`'s warp-time
-/// neighbour scan uses the same figure.
-pub(crate) const INSTANCE_STREAM_RADIUS: f32 = 50.0;
+/// `GetActorsAroundActor(this, 50)`; at 50 NPCs (the Gridania chocobo
+/// lender) popped in only up close and fields looked empty, so the stream
+/// reaches twice as far. Open-world monsters are removed again past
+/// [`MONSTER_DESPAWN_RADIUS`], so their number on the client stays bounded.
+pub(crate) const INSTANCE_STREAM_RADIUS: f32 = 100.0;
+
+/// Radius of `send_zone_in_bundle`'s warp-time neighbour scan: pmeteor's
+/// 50, keeping warp bundles the size the client is known to take. The
+/// instance stream fills in the rest on the first position update.
+pub(crate) const ZONE_IN_BUNDLE_RADIUS: f32 = 50.0;
+
+/// An open-world monster the client has is removed from it (0x00CB, this
+/// client only) once it is this far from the player — the streaming
+/// radius plus a margin so an actor near the edge doesn't flicker.
+pub(crate) const MONSTER_DESPAWN_RADIUS: f32 = 130.0;
 
 /// Actor-number bit that marks a content-script-spawned actor.
 /// Content spawn appliers set bit 18 in the composite actor id
@@ -745,21 +778,26 @@ pub(crate) fn push_npc_spawn(
         ];
         match lua.and_then(|l| l.call_npc_init(&class_path_lower)) {
             Some(tail) if !tail.is_empty() => p.extend(tail),
+            // Monster classes without a base script (most open-world
+            // families) take the tail every shipped `*Standard` monster
+            // script returns — `WolfStandard`, `ChigoeLesserStandard`,
+            // `LemmingStandard`, … are all `(true, true, 10, 0, 1, true,
+            // false ×7, 0)`. The populace tail below crashes the client
+            // the moment such a monster streams in (RaiseException in
+            // DepictionJudge).
+            _ if class_path_lower.contains("/monster/") => {
+                use common::luaparam::LuaParam;
+                p.extend([
+                    LuaParam::True,
+                    LuaParam::True,
+                    LuaParam::Int32(10),
+                    LuaParam::Int32(0),
+                ]);
+                p.extend([LuaParam::Int32(1), LuaParam::True]);
+                p.extend(std::iter::repeat_n(LuaParam::False, 7));
+                p.push(LuaParam::Int32(0));
+            }
             _ => {
-                // A monster class falling back to the populace tail is
-                // the exact precondition of the client's fatal
-                // DepictionJudge nil-`parameterTemp` crash (bit-2
-                // nameplate actors; live-proven 2026-07-04 Ubuntu
-                // opening-quest kick, where the miss was a
-                // case-sensitivity resolve failure). Ship the fallback
-                // loudly, never silently.
-                if class_path_lower.contains("/monster/") {
-                    tracing::warn!(
-                        class_path = %class_path_lower,
-                        actor = format!("0x{actor_id:08X}"),
-                        "monster base-class init missing/failed — shipping populace fallback tail",
-                    );
-                }
                 p.extend([
                     common::luaparam::LuaParam::False,
                     common::luaparam::LuaParam::False,
@@ -851,7 +889,10 @@ pub(crate) fn push_npc_spawn(
         motion_pack,
     ));
     subpackets.push(tx::actor::build_set_actor_status_all(actor_id, &[0u16; 20]));
-    subpackets.push(tx::actor::build_set_actor_icon(actor_id, 0));
+    subpackets.push(tx::actor::build_set_actor_icon(
+        actor_id,
+        crate::gm_tags::icon(actor_id),
+    ));
     subpackets.push(tx::actor::build_set_actor_is_zoning(actor_id, false));
     subpackets.push(tx::actor::build_actor_instantiate(
         actor_id,
@@ -1021,6 +1062,129 @@ pub(crate) fn push_npc_spawn(
     }
 }
 
+/// The spawn bundle for ANOTHER player, as this client sees them: Meteor
+/// `Player.GetSpawnPackets` for a requester who isn't the player (no
+/// 0x132 command registrations, no achievements, no inventory) plus the
+/// battle-state `/_init`. Two deliberate differences from Meteor:
+/// - SetActorPosition targets the actor's own id with spawn type 0
+///   (FADEIN), as every NPC spawn does here. Meteor sent target 0 and
+///   type 1 (PLAYERWAKE, the own-avatar inn wake-up); -1 is reserved
+///   for the receiving player's OWN avatar.
+/// - The ScriptBind is Meteor's non-self Player_work list:
+///   `[classPath, false, false, false, false, false, true]`.
+pub(crate) fn push_other_player_spawn(
+    subpackets: &mut Vec<common::subpacket::SubPacket>,
+    character: &crate::actor::Character,
+) {
+    let actor_id = character.base.actor_id;
+    let position = character.base.position();
+    let chara = &character.chara;
+    let active = if chara.current_job > 0 {
+        chara.current_job as usize
+    } else {
+        chara.class.max(0) as usize
+    };
+    let level = character
+        .battle_save
+        .skill_level
+        .get(active)
+        .copied()
+        .unwrap_or(1)
+        .max(1) as u16;
+    subpackets.extend([
+        tx::actor::build_add_actor(actor_id, 8),
+        if chara.mount_state != 0 {
+            // ChocoboRideCommand / PopulaceChocoboLender riding speeds.
+            tx::actor::build_set_actor_speed(actor_id, 0.0, 5.0, 10.0, 10.0)
+        } else {
+            tx::actor::build_set_actor_speed_default(actor_id)
+        },
+        tx::actor::build_set_actor_position(
+            actor_id,
+            actor_id as i32,
+            position.x,
+            position.y,
+            position.z,
+            character.base.rotation,
+            0,
+            false,
+        ),
+        tx::actor::build_set_actor_appearance(actor_id, chara.model_id, &chara.appearance_ids),
+        tx::actor::build_set_actor_name_sexed(
+            actor_id,
+            character.base.display_name_id,
+            character.base.display_name(),
+            crate::gamedata::tribe_is_female(chara.tribe),
+        ),
+        tx::handshake::build_0xf(actor_id),
+        tx::actor::build_set_actor_state(actor_id, character.base.current_main_state as u8, 0),
+        tx::actor::build_set_actor_sub_state(actor_id, 0, 0, 0, 0, 0, 0),
+        tx::actor::build_set_actor_status_all(actor_id, &[0u16; 20]),
+        tx::actor::build_set_actor_icon(actor_id, crate::gm_tags::icon(actor_id)),
+        tx::actor::build_set_actor_is_zoning(actor_id, false),
+    ]);
+    // Meteor's `CreatePlayerRelatedPackets` order: grand company,
+    // title, job, then the mount the player is riding.
+    if chara.gc_current != 0 {
+        subpackets.push(tx::player::build_set_grand_company(
+            actor_id,
+            chara.gc_current,
+            chara.gc_rank_limsa,
+            chara.gc_rank_gridania,
+            chara.gc_rank_uldah,
+        ));
+    }
+    if chara.current_title != 0 {
+        subpackets.push(tx::player::build_set_player_title(
+            actor_id,
+            chara.current_title,
+        ));
+    }
+    if chara.current_job != 0 {
+        subpackets.push(tx::player::build_set_current_job(
+            actor_id,
+            chara.current_job as u32,
+        ));
+    }
+    match chara.mount_state {
+        1 => subpackets.push(tx::player::build_set_current_mount_chocobo(
+            actor_id,
+            chara.chocobo_appearance,
+            chara.rental_expire_time,
+            chara.rental_min_left,
+        )),
+        2 => subpackets.push(tx::player::build_set_current_mount_goobbue(actor_id, 1)),
+        _ => {}
+    }
+    use common::luaparam::LuaParam;
+    subpackets.push(tx::actor::build_actor_instantiate(
+        actor_id,
+        0,
+        0x3040,
+        &format!("_pc{:08}", actor_id),
+        "Player",
+        &[
+            LuaParam::String("/Chara/Player/Player_work".to_string()),
+            LuaParam::False,
+            LuaParam::False,
+            LuaParam::False,
+            LuaParam::False,
+            LuaParam::False,
+            LuaParam::True,
+        ],
+    ));
+    subpackets.extend(tx::actor::build_other_player_property_init(
+        actor_id,
+        chara.hp.max(0) as u16,
+        chara.max_hp.max(0) as u16,
+        chara.mp.max(0) as u16,
+        chara.max_mp.max(0) as u16,
+        chara.tp,
+        active as u8,
+        level,
+    ));
+}
+
 /// Outcome of a single `seamless_check` call. Describes what, if anything,
 /// the player's position change triggered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1079,6 +1243,9 @@ impl Default for WorldSettings {
 pub struct WorldManager {
     /// Server-global world tunables (Dalamud phase, weather) from config.
     world_settings: WorldSettings,
+    /// Weather every zone shows in place of `world_settings.weather_id`
+    /// while an event holds it (0 = none), e.g. `!worldend`'s Dalamud sky.
+    weather_override: std::sync::atomic::AtomicU16,
 
     zones: RwLock<HashMap<u32, Arc<RwLock<Zone>>>>,
 
@@ -1124,6 +1291,7 @@ impl WorldManager {
     pub fn new() -> Self {
         Self {
             world_settings: WorldSettings::default(),
+            weather_override: std::sync::atomic::AtomicU16::new(0),
             zones: RwLock::new(HashMap::new()),
             zone_entrances: RwLock::new(HashMap::new()),
             seamless_boundaries: RwLock::new(HashMap::new()),
@@ -1139,6 +1307,25 @@ impl WorldManager {
     pub fn with_world_settings(mut self, settings: WorldSettings) -> Self {
         self.world_settings = settings;
         self
+    }
+
+    /// The weather players get when they arrive in a zone.
+    pub fn weather_id(&self) -> u16 {
+        match self
+            .weather_override
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => self.world_settings.weather_id,
+            w => w,
+        }
+    }
+
+    /// Hold every zone at `weather` (or `None` to go back to the
+    /// configured weather); returns the weather now in force.
+    pub fn set_weather_override(&self, weather: Option<u16>) -> u16 {
+        self.weather_override
+            .store(weather.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+        self.weather_id()
     }
 
     /// Resolve a gather node's `(harvest_node_id, harvest_type)` from
@@ -1525,6 +1712,49 @@ impl WorldManager {
         self.sessions.read().await.get(&id).cloned()
     }
 
+    /// A player leaving the world (session end): take their actor out of
+    /// the zone grid — and its private area / merged partner zone — and
+    /// remove them from every client that has them spawned. Without it a
+    /// logged-off player stayed in the grid: broadcasts and range scans
+    /// kept finding the ghost.
+    pub async fn detach_player(&self, actor_id: u32, session_id: u32) {
+        let Some(session) = self.session(session_id).await else {
+            return;
+        };
+        let mut zones = vec![session.current_zone_id];
+        zones.extend(session.merged_zone_id);
+        for zone_id in zones {
+            if let Some(zone_arc) = self.zone(zone_id).await {
+                let mut z = zone_arc.write().await;
+                let mut ob = crate::zone::outbox::AreaOutbox::new();
+                z.core.remove_actor(actor_id, &mut ob);
+                z.core.set_instance(actor_id, 0);
+                if let Some(name) = &session.current_private_area_name
+                    && let Some(pa) = z
+                        .private_areas
+                        .get_mut(name)
+                        .and_then(|m| m.get_mut(&session.current_private_area_level))
+                {
+                    pa.core.remove_actor(actor_id, &mut ob);
+                }
+            }
+        }
+        let watchers: Vec<u32> = {
+            let mut sessions = self.sessions.write().await;
+            sessions
+                .iter_mut()
+                .filter_map(|(id, s)| s.known_players.remove(&actor_id).then_some(*id))
+                .collect()
+        };
+        for watcher in watchers {
+            if let Some(client) = self.client(watcher).await {
+                let mut sub = crate::packets::send::actor::build_remove_actor(actor_id);
+                sub.set_target_id(watcher);
+                client.send_bytes(sub.to_bytes()).await;
+            }
+        }
+    }
+
     pub async fn remove_session(&self, id: u32) -> Option<Session> {
         self.clients.write().await.remove(&id);
         self.sessions.write().await.remove(&id)
@@ -1721,6 +1951,9 @@ impl WorldManager {
                     &mut ob,
                 );
             }
+            // Out of any content copy; `DoZoneChangeContent` re-tags its
+            // player after this.
+            dest.core.set_instance(actor_id, 0);
 
             // 5. Update session's private-area routing. `Some` only
             //    if we actually attached to a private area (so the
@@ -2152,7 +2385,7 @@ impl WorldManager {
             self.world_settings.dalamud_phase,
             music_id,
             0x01,
-            self.world_settings.weather_id,
+            self.weather_id(),
             self.world_settings.weather_transition,
             region_id,
             zone_actor_id,
@@ -2185,12 +2418,17 @@ impl WorldManager {
                 /* is_zoning_player */ spawn_type != SPAWN_TYPE_INSTANT_ZONE_IN,
             ),
             tx::actor::build_set_actor_appearance(actor_id, model_id, &appearance_ids),
-            tx::actor::build_set_actor_name(actor_id, display_name_id, &actor_name),
+            tx::actor::build_set_actor_name_sexed(
+                actor_id,
+                display_name_id,
+                &actor_name,
+                crate::gamedata::tribe_is_female(tribe),
+            ),
             tx::handshake::build_0xf(actor_id),
             tx::actor::build_set_actor_state(actor_id, main_state, 0),
             tx::actor::build_set_actor_sub_state(actor_id, 0, 0, 0, 0, 0, 0),
             tx::actor::build_set_actor_status_all(actor_id, &[0u16; 20]),
-            tx::actor::build_set_actor_icon(actor_id, 0),
+            tx::actor::build_set_actor_icon(actor_id, crate::gm_tags::icon(actor_id)),
             tx::actor::build_set_actor_is_zoning(actor_id, false),
         ]);
         // C# `Player.GetSpawnPackets` order:
@@ -2252,33 +2490,40 @@ impl WorldManager {
             player_class_name,
             &script_bind_params,
         ));
-        subpackets.extend([
-            tx::actor_inventory::build_inventory_begin_change(actor_id, true),
-            // Empty-package brackets. Even with the `encode_item` fixes
-            // (tags[4] vs tags[8], TAG_EXCLUSIVE) bringing garlemald's
-            // 0x0149 packet body to byte-structural parity with
-            // pmeteor's, the post-warp inventory emission STILL crashes
-            // Wine — suggesting the crash isn't the encoded item shape
-            // but something state-adjacent (the client already knows
-            // about these unique_ids from per-AddItem dispatches at
-            // LOGIN, and a post-warp re-load of the same ids may trip
-            // some duplicate-detection assertion). Disabling inventory
-            // emission here keeps the bundle wire-stable while the
-            // root cause is investigated separately.
-            tx::actor_inventory::build_inventory_set_begin(actor_id, 200, 0),
-            tx::actor_inventory::build_inventory_set_end(actor_id),
-            tx::actor_inventory::build_inventory_set_begin(actor_id, 320, 99),
-            tx::actor_inventory::build_inventory_set_end(actor_id),
-            tx::actor_inventory::build_inventory_set_begin(actor_id, 500, 100),
-            tx::actor_inventory::build_inventory_set_end(actor_id),
-            tx::actor_inventory::build_inventory_set_begin(actor_id, 10, 7),
-            tx::actor_inventory::build_inventory_set_end(actor_id),
-            tx::actor_inventory::build_inventory_set_begin(actor_id, 4, 5),
-            tx::actor_inventory::build_inventory_set_end(actor_id),
-            tx::actor_inventory::build_inventory_set_begin(actor_id, 10, 4),
-            tx::actor_inventory::build_inventory_set_end(actor_id),
-            tx::actor_inventory::build_inventory_set_begin(actor_id, 35, 0x00FE),
-        ]);
+        // The player's real item packages (Meteor `Player.SendZoneInPackets`
+        // → each `ItemPackage.SendFullPackage`): normal items, currency
+        // (gil), key items, bazaar, meld requests, loot. Garlemald sent them
+        // empty, because filling them crashed the stock client under Wine;
+        // an empty package replaces what the client holds, so everything
+        // owned (starting gear, gil, items given by GMs) vanished at every
+        // login and zone change. The native client takes the full lists.
+        subpackets.push(tx::actor_inventory::build_inventory_begin_change(
+            actor_id, true,
+        ));
+        for (cap, code) in [
+            (200u16, 0u16),
+            (320, 99),
+            (500, 100),
+            (10, 7),
+            (4, 5),
+            (10, 4),
+        ] {
+            let rows = db
+                .get_item_package(actor_id, code as u32)
+                .await
+                .unwrap_or_default();
+            subpackets.push(tx::actor_inventory::build_inventory_set_begin(
+                actor_id, cap, code,
+            ));
+            subpackets.extend(
+                rows.iter()
+                    .map(|r| tx::actor_inventory::build_inventory_list_x01(actor_id, r)),
+            );
+            subpackets.push(tx::actor_inventory::build_inventory_set_end(actor_id));
+        }
+        subpackets.push(tx::actor_inventory::build_inventory_set_begin(
+            actor_id, 35, 0x00FE,
+        ));
         // Meteor's `equipment.SendUpdate` calls SetInitialEquipmentPacket
         // (0x014E) between the set-begin/set-end brackets, even for a
         // fully-empty equipment set — the client's DepictionJudge Lua
@@ -2287,10 +2532,9 @@ impl WorldManager {
         // the `DepictionJudge:judgeNameplate [?:900] attempt to index a
         // nil value` crash ~10s after zone-in.
         //
-        // Garlemald-Server #28: load the player's REAL equipped
-        // `(equip_slot, catalog_id)` pairs from
-        // `characters_inventory_equipment` (joined to `server_items` for
-        // the graphic id) and send them here. Previously this always
+        // Garlemald-Server #28: load the player's REAL equipped gear from
+        // `characters_inventory_equipment` as `(equip_slot, bag link)`
+        // pairs and send them here. Previously this always
         // passed an empty slice, so even a correctly-equipped player got
         // no weapon on the wire at zone-in — the client couldn't enter
         // Active mode and the SEQ_005 combat tutorial softlocked. A
@@ -2688,7 +2932,7 @@ impl WorldManager {
                     .collect(),
                 None => z
                     .core
-                    .actors_around(actor_id, INSTANCE_STREAM_RADIUS)
+                    .actors_around(actor_id, ZONE_IN_BUNDLE_RADIUS)
                     .into_iter()
                     .filter(|a| a.actor_id != actor_id)
                     .filter(|a| {
@@ -2853,6 +3097,9 @@ impl WorldManager {
             let mut sessions = self.sessions.write().await;
             if let Some(s) = sessions.get_mut(&session_id) {
                 s.actor_instance_list = spawned_npc_ids.iter().copied().collect();
+                // The zone-in wipe removed every other player client-side;
+                // `send_instance_update` re-spawns those still in range.
+                s.known_players.clear();
             }
         }
 
@@ -3027,7 +3274,10 @@ impl WorldManager {
             // name, synthetic `bnpc_<id>` fallback for a not-yet-
             // registered member (rare race window). (Garlemald-Server
             // #46.)
-            let mut members = Vec::with_capacity(1 + session.transient_party_members.len());
+            // The player's party (crate::parties) comes before the
+            // content allies.
+            let roster_ids = crate::parties::roster(actor_id, &session.transient_party_members);
+            let mut members = Vec::with_capacity(1 + roster_ids.len());
             members.push(tx::groups::GroupMember::row_for_actor(
                 actor_id,
                 &actor_name,
@@ -3045,7 +3295,7 @@ impl WorldManager {
             // draws nothing for the row (see the helper's doc —
             // Garlemald-Server #46, round 4).
             let mut member_details: Vec<(u32, String, u32, Option<common::Vector3>)> = Vec::new();
-            for &mid in &session.transient_party_members {
+            for &mid in &roster_ids {
                 // Defensive: the transient list excludes the leader by
                 // convention (see `Session.transient_party_members`), but
                 // slot[0] must stay the requester, so skip a stray self id.
@@ -3102,8 +3352,15 @@ impl WorldManager {
             // 0x018B companions below MUST carry this same id: retail's
             // `invite_join_party.pcapng` shows one id shared by the
             // party trio (frame#92) and every 0x018D (frames #9..#96).
-            let group_index =
-                tx::groups::party_group_index(actor_id, members.len(), session.party_group_ordinal);
+            let group_index = crate::parties::solo_group(actor_id)
+                .filter(|_| members.len() <= 1)
+                .unwrap_or_else(|| {
+                    tx::groups::party_group_index(
+                        actor_id,
+                        members.len(),
+                        session.party_group_ordinal,
+                    )
+                });
             let mut offset = 0usize;
             let group_pkts = vec![
                 tx::groups::build_group_header(
@@ -3141,6 +3398,16 @@ impl WorldManager {
                 sub.set_target_id(session_id);
                 client.send_bytes(sub.to_bytes()).await;
             }
+            if members.len() > 1 {
+                let mut sub = crate::parties::owner_packet(
+                    actor_id,
+                    group_index,
+                    crate::parties::leader_of(actor_id),
+                );
+                sub.set_target_id(session_id);
+                client.send_bytes(sub.to_bytes()).await;
+            }
+            crate::parties::note_sent(actor_id, group_index);
 
             // 0x018D PartyMapMarkerUpdate — the "where is each party
             // member on the world map" overlay. Retail emits this on
@@ -3496,7 +3763,7 @@ impl WorldManager {
                 self.world_settings.dalamud_phase,
                 bgm_day,
                 0x04,
-                self.world_settings.weather_id,
+                self.weather_id(),
                 self.world_settings.weather_transition,
                 region_id,
                 zone_actor_id,
@@ -3678,6 +3945,103 @@ impl WorldManager {
         SeamlessResult::None
     }
 
+    /// Relay a player's movement (0x00CF MoveActorToPosition) to the
+    /// clients that have them spawned — Meteor's per-tick
+    /// `CreatePositionUpdatePacket` broadcast for players. Only sessions
+    /// whose `known_players` holds the mover get it: a move for an actor
+    /// the client never spawned has nothing to land on.
+    pub async fn broadcast_player_move(
+        &self,
+        actor_id: u32,
+        session_id: u32,
+        position: Vector3,
+        rotation: f32,
+        move_state: u16,
+    ) {
+        let Some(zone_id) = self.session(session_id).await.map(|s| s.current_zone_id) else {
+            return;
+        };
+        let Some(zone_arc) = self.zone(zone_id).await else {
+            return;
+        };
+        let watchers: Vec<u32> = {
+            let z = zone_arc.read().await;
+            z.core
+                .actors_around(actor_id, MONSTER_DESPAWN_RADIUS)
+                .into_iter()
+                .filter(|a| matches!(a.kind, crate::zone::area::ActorKind::Player))
+                .map(|a| a.actor_id)
+                .collect()
+        };
+        if watchers.is_empty() {
+            return;
+        }
+        let bytes = crate::packets::send::actor::build_move_actor_to_position(
+            actor_id, position.x, position.y, position.z, rotation, move_state,
+        );
+        for watcher in watchers {
+            // A player's actor id is their session id in this server.
+            let knows = self
+                .session(watcher)
+                .await
+                .is_some_and(|s| s.known_players.contains(&actor_id));
+            if !knows {
+                continue;
+            }
+            if let Some(client) = self.client(watcher).await {
+                let mut sub = bytes.clone();
+                sub.set_target_id(watcher);
+                client.send_bytes(sub.to_bytes()).await;
+            }
+        }
+    }
+
+    /// Spawn `new` other players to this client and remove `gone` ones,
+    /// keeping `session.known_players` in step.
+    async fn sync_known_players(
+        &self,
+        registry: &crate::runtime::actor_registry::ActorRegistry,
+        client: &ClientHandle,
+        session_id: u32,
+        new: &[u32],
+        gone: &[u32],
+    ) {
+        if new.is_empty() && gone.is_empty() {
+            return;
+        }
+        for id in gone {
+            let mut sub = crate::packets::send::actor::build_remove_actor(*id);
+            sub.set_target_id(session_id);
+            client.send_bytes(sub.to_bytes()).await;
+        }
+        let mut spawned = Vec::new();
+        for id in new {
+            let Some(handle) = registry.get(*id).await else {
+                continue;
+            };
+            let mut bundle = Vec::new();
+            push_other_player_spawn(&mut bundle, &*handle.character.read().await);
+            for mut sub in bundle {
+                sub.set_target_id(session_id);
+                client.send_bytes(sub.to_bytes()).await;
+            }
+            spawned.push(*id);
+        }
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&session_id) {
+            for id in gone {
+                s.known_players.remove(id);
+            }
+            s.known_players.extend(spawned.iter().copied());
+        }
+        tracing::debug!(
+            session = session_id,
+            spawned = ?spawned,
+            removed = ?gone,
+            "send_instance_update: other players",
+        );
+    }
+
     /// Continuous actor-instance update — the per-movement spawn stream
     /// (port of C# `Session.UpdateInstance` / `Player.SendInstanceUpdate`,
     /// PacketProcessor.cs:163). garlemald previously emitted populace
@@ -3691,14 +4055,13 @@ impl WorldManager {
     /// Wench population lives in partner zone 133 while the player roams
     /// 230).
     ///
-    /// ADD-ONLY first cut: it spawns newly-in-range actors and records
-    /// them in `session.actor_instance_list`, but does NOT despawn
-    /// actors the player walks away from (pmeteor sends RemoveActor on
-    /// the diff). Add-only deliberately avoids fighting the warp-time
-    /// mass-delete keep-list and quest `SetENpc` broadcasts that assume
-    /// an NPC stays in the client's table; the cost is that distant
-    /// actors linger client-side, which is benign at 1.x zone scale.
-    /// Despawn-on-distance is a follow-up.
+    /// It spawns newly-in-range actors and records them in
+    /// `session.actor_instance_list`. Open-world monsters are removed again
+    /// past [`MONSTER_DESPAWN_RADIUS`] (pmeteor sends RemoveActor on the
+    /// diff); populace and quest NPCs stay add-only, which avoids fighting
+    /// the warp-time mass-delete keep-list and quest `SetENpc` broadcasts
+    /// that assume an NPC stays in the client's table — their count is
+    /// small at 1.x zone scale.
     ///
     /// Private-area instances get their full population at zone-in (no
     /// radius scan) and are skipped here. Content instances DO stream:
@@ -3707,9 +4070,50 @@ impl WorldManager {
     /// reload only) — without it the escort's 8 ankle biters never
     /// receive an AddActor and fight invisibly (wire-proven: Sisipu died
     /// to an unrendered mob). Safe by construction: INSTANCE_STREAM_RADIUS
-    /// (50) exceeds the escort's ENGAGE_RADIUS (18) + PLAYER_LEASH (15)
+    /// (100) exceeds the escort's ENGAGE_RADIUS (18) + PLAYER_LEASH (15)
     /// and the controller's MAX_DETECT_DISTANCE (20), so a mob always
     /// renders before it can reach or aggro the player. (#46.)
+    /// Takes every open-world monster the client has spawned out of its
+    /// view (populace and quest NPCs stay, as in [`Self::send_instance_update`]).
+    /// For a content instance entered in place, where no zone-in wipe
+    /// clears the public zone's monsters first.
+    pub async fn remove_open_world_monsters(&self, session_id: u32) {
+        let Some(session) = self.session(session_id).await else {
+            return;
+        };
+        let Some(zone_arc) = self.zone(session.current_zone_id).await else {
+            return;
+        };
+        let Some(client) = self.client(session_id).await else {
+            return;
+        };
+        let ids: Vec<u32> = {
+            let z = zone_arc.read().await;
+            session
+                .actor_instance_list
+                .iter()
+                .copied()
+                .filter(|id| (id & CONTENT_ACTOR_BAND_BIT) == 0)
+                .filter(|id| {
+                    z.core
+                        .find_actor(*id)
+                        .is_some_and(|a| matches!(a.kind, crate::zone::area::ActorKind::BattleNpc))
+                })
+                .collect()
+        };
+        for id in &ids {
+            let mut sub = crate::packets::send::actor::build_remove_actor(*id);
+            sub.set_target_id(session_id);
+            client.send_bytes(sub.to_bytes()).await;
+        }
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&session_id) {
+            for id in &ids {
+                s.actor_instance_list.remove(id);
+            }
+        }
+    }
+
     pub async fn send_instance_update(
         &self,
         registry: &crate::runtime::actor_registry::ActorRegistry,
@@ -3747,18 +4151,32 @@ impl WorldManager {
         // NOT already have, holding the zone read-lock only for the scan.
         // The player's live grid position + region ride along for the
         // partner-zone point query below.
-        let (new_ids, player_position, region_id, zone_name): (
+        let (new_ids, far_ids, player_position, region_id, zone_name, new_players, gone_players): (
+            Vec<u32>,
             Vec<u32>,
             Option<Vector3>,
             u32,
             String,
+            Vec<u32>,
+            Vec<u32>,
         ) = {
             let z = zone_arc.read().await;
+            let center = z.core.find_actor(actor_id).map(|a| a.position);
             let ids = z
                 .core
                 .actors_around(actor_id, INSTANCE_STREAM_RADIUS)
                 .into_iter()
                 .filter(|a| a.actor_id != actor_id)
+                // `actors_around` returns whole grid cells (up to ~1.5x the
+                // radius); keep the exact radius so it stays inside
+                // MONSTER_DESPAWN_RADIUS and edge monsters don't flicker
+                // between streamed and removed every update.
+                .filter(|a| {
+                    center.is_none_or(|c| {
+                        let (dx, dz) = (a.position.x - c.x, a.position.z - c.z);
+                        dx * dx + dz * dz <= INSTANCE_STREAM_RADIUS * INSTANCE_STREAM_RADIUS
+                    })
+                })
                 .filter(|a| {
                     matches!(
                         a.kind,
@@ -3779,13 +4197,98 @@ impl WorldManager {
                 .map(|a| a.actor_id)
                 .filter(|id| !session.actor_instance_list.contains(id))
                 .collect();
+            // Other players in range the client hasn't spawned yet. The
+            // range query only pairs actors of one content copy, so inside
+            // a copy these are the party members who entered with you.
+            let players: Vec<u32> = {
+                z.core
+                    .actors_around(actor_id, INSTANCE_STREAM_RADIUS)
+                    .into_iter()
+                    .filter(|a| {
+                        a.actor_id != actor_id
+                            && matches!(a.kind, crate::zone::area::ActorKind::Player)
+                            && !session.known_players.contains(&a.actor_id)
+                            && center.is_none_or(|c| {
+                                let (dx, dz) = (a.position.x - c.x, a.position.z - c.z);
+                                dx * dx + dz * dz <= INSTANCE_STREAM_RADIUS * INSTANCE_STREAM_RADIUS
+                            })
+                    })
+                    .map(|a| a.actor_id)
+                    .collect()
+            };
+            // Known players who left: logged off, changed zone, or walked
+            // past MONSTER_DESPAWN_RADIUS (the same hysteresis as monsters).
+            let gone_players: Vec<u32> = session
+                .known_players
+                .iter()
+                .copied()
+                .filter(|id| match (z.core.find_actor(*id), center) {
+                    (Some(a), Some(c)) => {
+                        let (dx, dz) = (a.position.x - c.x, a.position.z - c.z);
+                        !matches!(a.kind, crate::zone::area::ActorKind::Player)
+                            || dx * dx + dz * dz > MONSTER_DESPAWN_RADIUS * MONSTER_DESPAWN_RADIUS
+                            // went into (or out of) a content copy
+                            || z.core.instance_of(*id) != z.core.instance_of(actor_id)
+                    }
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                })
+                .collect();
+            // Open-world monsters the client has that are now far away.
+            // Only base-zone BattleNpcs: populace and quest NPCs stay
+            // add-only (quest ENPC broadcasts and the warp keep-list
+            // assume they remain in the client's table), and content
+            // actors live and die with their instance.
+            let player_pos = z.core.find_actor(actor_id).map(|a| a.position);
+            let far: Vec<u32> = match player_pos {
+                Some(p) => session
+                    .actor_instance_list
+                    .iter()
+                    .copied()
+                    .filter(|id| (id & CONTENT_ACTOR_BAND_BIT) == 0)
+                    .filter(|id| {
+                        z.core.find_actor(*id).is_some_and(|a| {
+                            matches!(a.kind, crate::zone::area::ActorKind::BattleNpc) && {
+                                let (dx, dz) = (a.position.x - p.x, a.position.z - p.z);
+                                dx * dx + dz * dz > MONSTER_DESPAWN_RADIUS * MONSTER_DESPAWN_RADIUS
+                            }
+                        })
+                    })
+                    .collect(),
+                None => Vec::new(),
+            };
             (
                 ids,
-                z.core.find_actor(actor_id).map(|a| a.position),
+                far,
+                player_pos,
                 z.core.region_id as u32,
                 z.core.zone_name.clone(),
+                players,
+                gone_players,
             )
         };
+        self.sync_known_players(registry, &client, session_id, &new_players, &gone_players)
+            .await;
+
+        if !far_ids.is_empty() {
+            for id in &far_ids {
+                let mut sub = crate::packets::send::actor::build_remove_actor(*id);
+                sub.set_target_id(session_id);
+                client.send_bytes(sub.to_bytes()).await;
+            }
+            let mut sessions = self.sessions.write().await;
+            if let Some(s) = sessions.get_mut(&session_id) {
+                for id in &far_ids {
+                    s.actor_instance_list.remove(id);
+                }
+            }
+            tracing::debug!(
+                actor = format!("0x{actor_id:08X}"),
+                session = session_id,
+                removed = far_ids.len(),
+                "send_instance_update: removed out-of-range monsters",
+            );
+        }
 
         // `(actor_id, owning-zone name)` per streamable actor — the zone
         // name feeds the generated actor name's zone abbreviation, so a
@@ -3892,6 +4395,7 @@ impl WorldManager {
             session = session_id,
             zone = session.current_zone_id,
             streamed = added.len(),
+            ids = ?added.iter().map(|id| format!("0x{id:08X}")).collect::<Vec<_>>(),
             "send_instance_update: streamed newly-in-range actors",
         );
     }
@@ -4199,5 +4703,46 @@ mod tests {
 
         assert!(!wm.zone(1).await.unwrap().read().await.core.contains(100));
         assert!(wm.zone(2).await.unwrap().read().await.core.contains(100));
+    }
+}
+
+#[cfg(test)]
+mod other_player_spawn_tests {
+    use super::push_other_player_spawn;
+    use crate::packets::opcodes::*;
+
+    #[test]
+    fn carries_sex_grand_company_and_mount() {
+        let mut c = crate::actor::Character::new(7);
+        c.chara.tribe = 12; // Seeker of the Sun: female
+        c.chara.gc_current = 2;
+        c.chara.gc_rank_gridania = 11;
+        c.chara.mount_state = 1;
+        c.chara.chocobo_appearance = 1;
+        let mut out = Vec::new();
+        push_other_player_spawn(&mut out, &c);
+        let find = |op: u16| out.iter().find(|p| p.game_message.opcode == op);
+        assert_eq!(
+            &find(OP_SET_ACTOR_NAME).unwrap().data[0x24..0x28],
+            &[1, 0, 0, 0]
+        );
+        assert_eq!(
+            &find(OP_SET_GRAND_COMPANY).unwrap().data[..4],
+            &[2, 127, 11, 127]
+        );
+        assert_eq!(find(OP_SET_CURRENT_MOUNT_CHOCOBO).unwrap().data[5], 1);
+        let speed = find(OP_SET_ACTOR_SPEED).unwrap();
+        assert!(speed.data.windows(4).any(|w| w == 10.0f32.to_le_bytes()));
+
+        let mut out = Vec::new();
+        push_other_player_spawn(&mut out, &crate::actor::Character::new(8));
+        assert!(
+            !out.iter()
+                .any(|p| p.game_message.opcode == OP_SET_GRAND_COMPANY)
+        );
+        assert!(
+            !out.iter()
+                .any(|p| p.game_message.opcode == OP_SET_CURRENT_MOUNT_CHOCOBO)
+        );
     }
 }

@@ -33,6 +33,8 @@ pub struct Account {
 pub struct World {
     pub id: u16,
     pub address: String,
+    /// See `common::server_list::ServerEntry::lan_address`.
+    pub lan_address: Option<String>,
     pub port: u16,
     pub list_position: u16,
     pub population: u16,

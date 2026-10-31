@@ -46,6 +46,10 @@ use crate::packets::{
 #[derive(Default)]
 pub struct LobbySession {
     pub blowfish: Option<Blowfish>,
+    /// The client's address, and the address it reached us on (for
+    /// `lan_address`).
+    pub peer: Option<std::net::SocketAddr>,
+    pub local: Option<std::net::SocketAddr>,
     pub current_user_id: u32,
     pub current_session_token: String,
 
@@ -53,6 +57,48 @@ pub struct LobbySession {
     pub new_chara_slot: u16,
     pub new_chara_world_id: u16,
     pub new_chara_name: String,
+}
+
+/// Whether `ip` is on the server's side of a home router: private, link-local
+/// or loopback (IPv4, IPv6, and IPv4-mapped IPv6).
+fn is_local_network(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => is_local_network(IpAddr::V4(v4)),
+            None => {
+                v6.is_loopback()
+                    || (v6.segments()[0] & 0xfe00) == 0xfc00
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80
+            }
+        },
+    }
+}
+
+/// The world address to hand this client: `lan_address` for a client on the
+/// server's own network (so it never has to loop out through the router's
+/// public address), `address` for everyone else.
+fn handoff_address(
+    world: &World,
+    peer: Option<std::net::SocketAddr>,
+    local: Option<std::net::SocketAddr>,
+) -> String {
+    let lan = world
+        .lan_address
+        .as_deref()
+        .filter(|_| peer.is_some_and(|p| is_local_network(p.ip())));
+    match lan {
+        Some("auto") => match local {
+            Some(l) => match l.ip().to_canonical() {
+                std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+                v4 => v4.to_string(),
+            },
+            None => world.address.clone(),
+        },
+        Some(addr) => addr.to_string(),
+        None => world.address.clone(),
+    }
 }
 
 /// Response action for a processed packet.
@@ -65,7 +111,7 @@ pub enum Reply {
 
 pub struct PacketProcessor {
     db: Database,
-    /// Character-select world list, loaded once from `configs/servers.toml`
+    /// Character-select world list, loaded once from the settings (`servers`)
     /// at startup (issue #11) — deployment config, not database state.
     worlds: Vec<World>,
 }
@@ -78,6 +124,7 @@ impl PacketProcessor {
             .map(|s| World {
                 id: s.id as u16,
                 address: s.address.clone(),
+                lan_address: s.lan_address.clone(),
                 port: s.port,
                 list_position: s.list_position,
                 // Live population is runtime state the lobby has never
@@ -309,18 +356,19 @@ impl PacketProcessor {
             return Ok(vec![Reply::Encrypted(vec![err])]);
         };
 
+        let address = handoff_address(&world, session.peer, session.local);
         tracing::info!(
             user_id = session.current_user_id,
             character_id = req.character_id,
             world = %world.name,
-            handoff = format!("{}:{}", world.address, world.port),
+            handoff = format!("{}:{}", address, world.port),
             "select_character confirmed"
         );
         let confirm = select_character_confirm_packet(
             req.sequence,
             req.character_id,
             &session.current_session_token,
-            &world.address,
+            &address,
             world.port,
             req.ticket,
         );
@@ -638,5 +686,71 @@ mod tests {
         assert!(reservation_missing(5, true));
         // A recovered cid + name means the reservation is present.
         assert!(!reservation_missing(5, false));
+    }
+}
+
+#[cfg(test)]
+mod handoff_tests {
+    use super::*;
+
+    fn world(lan: Option<&str>) -> World {
+        World {
+            id: 1,
+            address: "xiv.example.com".into(),
+            lan_address: lan.map(String::from),
+            port: 54992,
+            list_position: 1,
+            population: 0,
+            name: "W".into(),
+            is_active: true,
+        }
+    }
+
+    fn addr(s: &str) -> Option<std::net::SocketAddr> {
+        Some(s.parse().unwrap())
+    }
+
+    #[test]
+    fn internet_clients_get_the_public_address() {
+        let w = world(Some("auto"));
+        assert_eq!(
+            handoff_address(&w, addr("203.0.113.9:5000"), addr("10.0.0.11:54994")),
+            "xiv.example.com"
+        );
+    }
+
+    #[test]
+    fn local_clients_get_the_lan_address() {
+        let w = world(Some("auto"));
+        assert_eq!(
+            handoff_address(&w, addr("10.0.0.42:5000"), addr("10.0.0.11:54994")),
+            "10.0.0.11"
+        );
+        assert_eq!(
+            handoff_address(&w, addr("127.0.0.1:5000"), addr("127.0.0.1:54994")),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            handoff_address(
+                &w,
+                addr("[::ffff:192.168.1.5]:5000"),
+                addr("[::ffff:192.168.1.2]:54994")
+            ),
+            "192.168.1.2"
+        );
+        let fixed = world(Some("192.168.1.20"));
+        assert_eq!(
+            handoff_address(&fixed, addr("192.168.1.5:5000"), addr("192.168.1.2:54994")),
+            "192.168.1.20"
+        );
+    }
+
+    #[test]
+    fn unset_keeps_the_old_behaviour() {
+        let w = world(None);
+        assert_eq!(
+            handoff_address(&w, addr("10.0.0.42:5000"), addr("10.0.0.11:54994")),
+            "xiv.example.com"
+        );
     }
 }

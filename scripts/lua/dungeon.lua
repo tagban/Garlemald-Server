@@ -1,0 +1,90 @@
+require ("global")
+require ("dungeon_spawns")
+
+--[[
+
+The 1.0 dungeons: each run is a copy of its own, for a party or a solo
+player (content_instance on the server). Entering builds the copy in the
+dungeon's zone, spawns its monsters there (DUNGEON_SPAWNS, from seed 130)
+and brings the player's party members in the same zone along; leaving hands
+the copy to whoever is still inside, or ends it.
+
+Directors are the client's own for each dungeon (director/instanceraid and
+director/occupancy in the client scripts). Entry points are inside each
+dungeon by its first door or barrier; exits put you at the nearest camp's
+aetherial gate. Retail queued you through NPCs by each entrance (Toto-Rak's
+Bloisirant in the South Shroud, for one); until those are scripted, GMs use
+!dungeon.
+
+]]
+
+DUNGEONS = {
+	totorak = {
+		zone = 159, name = "Totorak", content = "SimpleContentDungeonTotorak",
+		director = "Occupancy/RaidFst0Dungeon03",
+		entry = {885.0, -22.7, 651.0, 1.57},		-- the entrance door
+		exit = {154, 991.0, -11.8, 604.0, 0.0},		-- Silent Arbor, South Shroud
+	},
+	dzemael = {
+		zone = 231, name = "Dzemael", content = "SimpleContentDungeonDzemael",
+		director = "Occupancy/RaidRoc0Dungeon01",
+		entry = {64.0, 181.25, 192.0, 3.14},		-- the Chocobo Stables door
+		exit = {143, -517.0, 207.9, 547.0, 0.0},	-- Boulder Downs, Coerthas Central Highlands
+	},
+	aurum = {
+		zone = 245, name = "AurumVale", content = "SimpleContentDungeonAurumVale",
+		director = "InstanceRaid/InstanceRaidAurumVale",
+		entry = {-686.9, 171.3, 1359.9, 0.0},		-- the Golden Pools' south barrier
+		exit = {147, -1.0, 144.1, 1377.0, 0.0},		-- Teriggan's Stand, Coerthas Central Lowlands
+	},
+	cutters = {
+		zone = 246, name = "CuttersCry", content = "SimpleContentDungeonCuttersCry",
+		director = "InstanceRaid/InstanceRaidCuttersCry",
+		entry = {-1402.0, 252.2, -1455.0, 0.0},	-- the first chamber
+		exit = {173, -710.0, 280.4, -2208.0, 0.0},	-- Cutter's Pass, Northern Thanalan
+	},
+}
+
+local function byZone(zoneId)
+	for _, d in pairs(DUNGEONS) do
+		if d.zone == zoneId then return d end
+	end
+end
+
+function enterDungeon(player, key)
+	local d = DUNGEONS[key];
+	if d == nil then return end
+	local area = player.CurrentArea:CreateContentArea(player,
+		"/Area/PrivateArea/Content/PrivateAreaMasterSimpleContent",
+		d.name, d.content, d.director, d.zone);
+	if area == nil then return end
+	local director = area:GetContentDirector();
+	player:AddDirector(director);
+	director:StartDirector(false);
+	-- Open the director's notice event like the quest duties do; the
+	-- director's onEventStarted ends it once the player is in.
+	player:KickEvent(director, "noticeEvent", true);
+	player:SetLoginDirector(director);
+	-- Spawn type 15, a normal zone change: the 0x10 the quest duties use for
+	-- same-map warps leaves a cross-zone entry stuck on Now Loading.
+	GetWorldManager():DoZoneChangeContentParty(player, area,
+		d.entry[1], d.entry[2], d.entry[3], d.entry[4], 15);
+end
+
+function leaveDungeon(player)
+	local d = byZone(player:GetZoneID());
+	player:LeaveContent();
+	if d ~= nil then
+		GetWorldManager():DoZoneChange(player, d.exit[1], nil, 0, 15, d.exit[2], d.exit[3], d.exit[4], d.exit[5]);
+	end
+end
+
+-- A content script's onCreate: the dungeon's monsters, into this copy.
+function spawnDungeon(player, contentArea, director, zoneId)
+	director:AddMember(player);
+	local range = DUNGEON_SPAWNS[zoneId];
+	if range == nil then return end
+	for id = range[1], range[2] do
+		GetWorldManager().SpawnBattleNpcById(id, contentArea);
+	end
+end

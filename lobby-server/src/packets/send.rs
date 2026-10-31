@@ -612,6 +612,7 @@ mod tests {
             worlds.push(World {
                 id: i,
                 address: "127.0.0.1".into(),
+                lan_address: None,
                 port: 54991,
                 list_position: i,
                 population: 0,
@@ -630,6 +631,7 @@ mod tests {
             worlds.push(World {
                 id: i,
                 address: "127.0.0.1".into(),
+                lan_address: None,
                 port: 54991,
                 list_position: i,
                 population: 0,

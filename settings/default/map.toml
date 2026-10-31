@@ -1,0 +1,25 @@
+# XIVLegacy Server: map (the game world), shipped defaults.
+# Don't edit this file: put what differs in settings/map.toml (see settings/README.md).
+
+[server]
+bind_ip = "127.0.0.1"
+port = 1989
+show_timestamp = true
+world_id = 1
+
+[database]
+path = "./data/garlemald.db"
+
+[scripting]
+script_root = "./scripts/lua"
+# Set false to skip zone/actor loaders (used by the integration test harness
+# to boot against an offline DB). Leave true for a real server.
+load_from_database = true
+
+[world]
+# Dalamud descent phase emitted at zone-in (0 = largest/closest). Visual
+# testing knob for the red-moon descent only; no gameplay effect.
+dalamud_phase = 0
+# Weather id (1 = clear) + transition time emitted at zone-in.
+weather_id = 1
+weather_transition = 1

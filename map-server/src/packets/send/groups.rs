@@ -588,10 +588,15 @@ pub fn build_create_named_group_multiple(
     SubPacket::new(OP_CREATE_NAMED_GROUP_MULTIPLE, source_actor_id, data)
 }
 
-/// 0x0143 DeleteGroupPacket.
+/// 0x0143 DeleteGroupPacket: u64 3, the group id, u64 0, the group id
+/// again (Meteor `DeleteGroupPacket`). With the id alone at offset 0 the
+/// client deleted nothing, so invitations, replaced party lists and
+/// disbanded linkshells stayed on it.
 pub fn build_delete_group(source_actor_id: u32, group_id: u64) -> SubPacket {
     let mut data = body(0x40);
-    data[..8].copy_from_slice(&group_id.to_le_bytes());
+    data[..8].copy_from_slice(&3u64.to_le_bytes());
+    data[8..16].copy_from_slice(&group_id.to_le_bytes());
+    data[24..32].copy_from_slice(&group_id.to_le_bytes());
     SubPacket::new(OP_DELETE_GROUP, source_actor_id, data)
 }
 
@@ -933,6 +938,121 @@ pub fn build_set_occupancy_group(
         .unwrap();
     // Remaining 36 bytes already zero from `body()`.
     SubPacket::new(OP_SET_OCCUPANCY_GROUP, actor_id, data)
+}
+
+// ---------------------------------------------------------------------------
+// Linkshells (Meteor `Linkshell` group, `Group.CompanyGroup`).
+// ---------------------------------------------------------------------------
+
+/// `Group.CompanyGroup`: the GroupHeader type of a linkshell.
+pub const GROUP_TYPE_LINKSHELL: u32 = 20002;
+
+/// 0x018A SetActiveLinkshellPacket: which linkshell is the player's active
+/// one (0: none). Meteor `SetActiveLinkshellPacket`.
+pub fn build_set_active_linkshell(source_actor_id: u32, group_id: u64) -> SubPacket {
+    let mut data = body(0x98);
+    let mut c = Cursor::new(&mut data[..]);
+    c.write_u64::<LittleEndian>(group_id).unwrap();
+    c.set_position(0x40);
+    c.write_u32::<LittleEndian>(GROUP_TYPE_LINKSHELL).unwrap();
+    c.set_position(0x60);
+    c.write_u32::<LittleEndian>(u32::from(group_id != 0))
+        .unwrap();
+    SubPacket::new(OP_SET_ACTIVE_LINKSHELL, source_actor_id, data)
+}
+
+/// One work value for [`build_synch_group_work_values_entries`]: Meteor's
+/// type byte (1 byte, 2 short, 4 int, 8 long), the property path, its value.
+pub struct WorkValue {
+    pub kind: u8,
+    pub name: String,
+    pub value: Vec<u8>,
+}
+
+/// 0x017A SynchGroupWorkValues with the given values (a single packet; for
+/// short lists such as a relation group's host and command).
+pub fn build_synch_group_work_values_entries(
+    source_actor_id: u32,
+    group_id: u64,
+    values: &[WorkValue],
+    target: &str,
+) -> SubPacket {
+    let mut data = body(0xB0);
+    data[..8].copy_from_slice(&group_id.to_le_bytes());
+    let mut pos = 9;
+    for v in values {
+        data[pos] = v.kind;
+        data[pos + 1..pos + 5]
+            .copy_from_slice(&common::utils::murmur_hash2(&v.name, 0).to_le_bytes());
+        data[pos + 5..pos + 5 + v.value.len()].copy_from_slice(&v.value);
+        pos += 5 + v.value.len();
+    }
+    data[pos] = 0x82 + target.len() as u8;
+    data[pos + 1..pos + 1 + target.len()].copy_from_slice(target.as_bytes());
+    pos += 1 + target.len();
+    data[8] = (pos - 9) as u8;
+    SubPacket::new(OP_SYNCH_GROUP_WORK_VALUES, source_actor_id, data)
+}
+
+/// 0x017A SynchGroupWorkValues for a linkshell: Meteor
+/// `Linkshell.SendInitWorkValues` / `ResendWorkValues` —
+/// `work._globalSave.master` (long), `work._globalSave.crestIcon[0]`
+/// (short), `work._globalSave.rank` (byte) and each member's
+/// `work._memberSave[i].rank` (byte), to `target` ("/_init" answering the
+/// client's group-created, "memberRank" for a later change). Entries that
+/// don't fit one packet continue in the next.
+pub fn build_synch_group_work_values_linkshell(
+    source_actor_id: u32,
+    group_id: u64,
+    master: u64,
+    crest: u16,
+    rank: u8,
+    member_ranks: &[u8],
+    target: &str,
+) -> Vec<SubPacket> {
+    use common::utils::murmur_hash2;
+    // body(0xB0) holds 0x90 bytes: the group id (8), the running total (1),
+    // then entries and the target
+    const ROOM: usize = 0x90 - 9;
+    let target_len = 1 + target.len();
+    let mut entries: Vec<Vec<u8>> = Vec::new();
+    let mut entry = |kind: u8, name: &str, value: &[u8]| {
+        let mut e = vec![kind];
+        e.extend_from_slice(&murmur_hash2(name, 0).to_le_bytes());
+        e.extend_from_slice(value);
+        entries.push(e);
+    };
+    entry(8, "work._globalSave.master", &master.to_le_bytes());
+    entry(2, "work._globalSave.crestIcon[0]", &crest.to_le_bytes());
+    entry(1, "work._globalSave.rank", &[rank]);
+    for (i, r) in member_ranks.iter().enumerate() {
+        entry(1, &format!("work._memberSave[{i}].rank"), &[*r]);
+    }
+    let mut packets = Vec::new();
+    let mut i = 0;
+    while i < entries.len() || packets.is_empty() {
+        let mut data = body(0xB0);
+        data[..8].copy_from_slice(&group_id.to_le_bytes());
+        let mut pos = 9;
+        while i < entries.len() && (pos - 9) + entries[i].len() + target_len <= ROOM {
+            data[pos..pos + entries[i].len()].copy_from_slice(&entries[i]);
+            pos += entries[i].len();
+            i += 1;
+        }
+        data[pos] = 0x82 + target.len() as u8;
+        data[pos + 1..pos + 1 + target.len()].copy_from_slice(target.as_bytes());
+        pos += target_len;
+        data[8] = (pos - 9) as u8;
+        packets.push(SubPacket::new(
+            OP_SYNCH_GROUP_WORK_VALUES,
+            source_actor_id,
+            data,
+        ));
+        if i < entries.len() && pos == 9 + target_len {
+            break; // an entry larger than a packet: can't happen with these sizes
+        }
+    }
+    packets
 }
 
 #[cfg(test)]
@@ -1319,5 +1439,20 @@ mod tests {
         let name_bytes = &pkt.data[0x16..0x38];
         assert_eq!(name_bytes.len(), 34);
         assert!(name_bytes.iter().all(|b| *b == b'A'));
+    }
+}
+
+#[cfg(test)]
+mod delete_group_tests {
+    use super::*;
+
+    #[test]
+    fn delete_group_matches_meteor_layout() {
+        let p = build_delete_group(1, 0x8000_4C52_0000_0001);
+        assert_eq!(p.data.len(), 0x20);
+        assert_eq!(&p.data[..8], &3u64.to_le_bytes());
+        assert_eq!(&p.data[8..16], &0x8000_4C52_0000_0001u64.to_le_bytes());
+        assert_eq!(&p.data[16..24], &[0; 8]);
+        assert_eq!(&p.data[24..32], &0x8000_4C52_0000_0001u64.to_le_bytes());
     }
 }

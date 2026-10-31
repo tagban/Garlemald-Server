@@ -310,6 +310,13 @@ pub(crate) fn pack_face_info(
         | ((face_eyebrows as u32 & 0x7) << 27)
 }
 
+/// Whether a tribe id is a female one (the client tribe sheet's
+/// `IsFemale`): Midlander, Wildwood, Duskwight, Plainsfolk and
+/// Dunesfolk females, and both Miqo'te tribes.
+pub fn tribe_is_female(tribe: u8) -> bool {
+    matches!(tribe, 2 | 5 | 7 | 9 | 11 | 12 | 13)
+}
+
 /// Fallback model id when the DB stores the `baseId = 0xFFFFFFFF` sentinel.
 /// Full port of C# `CharacterUtils.GetTribeModel` — model ids are tiny
 /// integers (1..9) that index into the client's player-race model table.
@@ -668,6 +675,20 @@ pub struct GuildleveGamedata {
     pub leve_type: u8,
     pub reward_exp: u32,
     pub reward_gil: u32,
+    /// 1 = battle, 2 = gathering, 4 = faction.
+    pub class_type: u8,
+    /// City the leve belongs to: 1 Limsa, 2 Gridania, 3 Ul'dah, 4 Coerthas.
+    pub location: u8,
+    pub level: u16,
+    /// Actor class id of the camp aetheryte the leve starts from.
+    pub aetheryte: u32,
+    pub plate_id: u32,
+    pub border_id: u32,
+    pub time_limit: u32,
+    pub favor_count: u32,
+    /// Per objective: how many, and the target's display-name id.
+    pub aim_num: [i8; 4],
+    pub mobs: [u32; 4],
 }
 
 // Gamedata row types (ItemData, InventoryItem) live in `crate::data`; import

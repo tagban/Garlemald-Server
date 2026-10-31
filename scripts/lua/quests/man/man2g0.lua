@@ -42,8 +42,10 @@ DISQUIETED_LANCER			= 1000744;
 ENTHUSIASTIC_ARCHER			= 1000745;
 EMBITTERED_ARCHER			= 1000746;
 DISCONCERTED_CONJURER		= 1000747;
-CNJ_TRIGGER					= 0;
-OUTSIDE_ECHO_TRIGGER		= 0;
+-- No source names the Fane door trigger or the Lichenweed echo exit, so
+-- they borrow two stripped trigger classes (seed/114). Seq 015's journal
+-- marker is on Soileine: she starts the echo, not a trigger.
+OUTSIDE_ECHO_TRIGGER		= 1090280;
 CNJ_BRIDGE_TRIGGER			= 1090200;
 
 -- CNJ Guild
@@ -81,7 +83,13 @@ MERRY_OLD_MATRON			= 1001488;
 WELL_GROOMED_WOMAN			= 1001489;
 
 AMPHITHEATRE_TRIGGER		= 1090279;
-FST_ECHO_TRIGGER			= 0;
+FST_ECHO_TRIGGER			= 1090281;
+
+-- Where the quest moves the player (zone, private area type, x, y, z, rotation)
+ARC_ECHO			= {206, 0, 232.6, 12.0, -1271.7, 2.6};		-- Quiver's Hold, before the ranging
+ARC_GUILD			= {206, nil, 232.6, 12.0, -1271.7, 2.6};
+CNJ_ECHO			= {206, 10, -320.3, 7.5, -1700.8, -1.48};	-- on the path east of Stillglade Fane
+CNJ_GUILD			= {206, nil, -320.3, 7.5, -1700.8, -1.48};
 
 -- Msg packs for the Npc LS
 NPCLS_MSGS = {
@@ -123,7 +131,8 @@ function onStateChange(player, quest, sequence)
 	elseif (sequence == SEQ_005) then
 		quest:SetENpc(ANAIDJAA, QFLAG_TALK);
 	elseif (sequence == SEQ_015) then
-		quest:SetENpc(CNJ_TRIGGER, QFLAG_PUSH, false, true);
+		quest:SetENpc(SOILEINE, QFLAG_TALK);
+		quest:SetENpc(MIOUNNE);
 	elseif (sequence == SEQ_020) then
 		quest:SetENpc(OUTSIDE_ECHO_TRIGGER, QFLAG_PUSH, false, true);
 		quest:SetENpc(CNJ_BRIDGE_TRIGGER);
@@ -182,6 +191,8 @@ function onStateChange(player, quest, sequence)
 		quest:SetENpc(FST_ECHO_TRIGGER, QFLAG_PUSH, false, true);
 		quest:SetENpc(YDA);
 		quest:SetENpc(PAPALYMO);
+	elseif (sequence == SEQ_050) then
+		quest:SetENpc(MIOUNNE, QFLAG_REWARD);
 	end	
 end
 
@@ -202,7 +213,7 @@ function onTalk(player, quest, npc)
 			quest:StartSequence(SEQ_003);
 			player:EndEvent();
 			quest:UpdateENPCs();
-			GetWorldManager():DoZoneChange(player, 206, "PrivateAreaMasterPast", 0, 0, 1832.243, 16.352, 1834.965, 1.584);
+			warpTo(player, ARC_ECHO);
 			return;
 		elseif (classId == MIOUNNE) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent005_2");
@@ -229,7 +240,13 @@ function onTalk(player, quest, npc)
 			quest:StartSequence(SEQ_010);
 		end
 	elseif (sequence == SEQ_015) then
-		if (classId == MIOUNNE) then
+		if (classId == SOILEINE) then
+			callClientFunction(player, "delegateEvent", player, quest, "processEvent030");
+			quest:StartSequence(SEQ_020);
+			player:EndEvent();
+			warpTo(player, CNJ_ECHO);
+			return;
+		elseif (classId == MIOUNNE) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent020_2");
 		--elseif (classId == ZEZEKUTA) then
 		--	callClientFunction(player, "delegateEvent", player, quest, "processEvent020_3");
@@ -270,6 +287,10 @@ function onTalk(player, quest, npc)
 	elseif (sequence == SEQ_030) then
 		if (classId == O_APP_PESI) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent050");
+			quest:StartSequence(SEQ_035);
+			player:EndEvent();
+			warpTo(player, CNJ_GUILD);
+			return;
 		elseif (classId == FYE) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent045_2");
 		elseif (classId == SILKY_HAIRED_CONJURER) then
@@ -344,6 +365,14 @@ function onTalk(player, quest, npc)
 		elseif (classId == FASTIDIOUS_FELLOW) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent060_26");
 		end
+	elseif (sequence == SEQ_050) then
+		if (classId == MIOUNNE) then
+			callClientFunction(player, "delegateEvent", player, quest, "processEvent080_01", 1);
+			callClientFunction(player, "delegateEvent", player, quest, "sqrwa", 500, 1, 1, 2);
+			player:EndEvent();
+			player:CompleteQuest(quest);
+			return;
+		end
 	elseif (sequence == SEQ_045) then
 		if (classId == YDA) then
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent070_2");
@@ -361,8 +390,14 @@ function onPush(player, quest, npc)
 	local sequence = quest:getSequence();
 	local classId = npc:GetActorClassId();
 	
-	if (sequence == SEQ_15) then
-		if (classId == CNJ_TRIGGER) then
+	if (sequence == SEQ_020) then
+		if (classId == OUTSIDE_ECHO_TRIGGER) then
+			-- The scene fades to a loading screen and waits for a zone change
+			callClientFunction(player, "delegateEvent", player, quest, "processEvent040");
+			quest:StartSequence(SEQ_025);
+			player:EndEvent();
+			warpTo(player, CNJ_ECHO);
+			return;
 		end
 	elseif (sequence == SEQ_035) then
 		if (classId == AMPHITHEATRE_TRIGGER) then
@@ -378,8 +413,9 @@ function onPush(player, quest, npc)
 			callClientFunction(player, "delegateEvent", player, quest, "processEvent080");
 			quest:StartSequence(SEQ_050);
 			player:EndEvent();
-			quest:UpdateENPCs();
-			GetWorldManager():DoZoneChange(player, 155, nil, 0, 0, 60.225, 4.0, -1218.445, 0.862);
+			-- Back at the Adventurers' Guild, Miounne takes the quest. (A
+			-- notice event can't carry it: the reward box never answers one.)
+			GetWorldManager():DoZoneChange(player, 155, nil, 0, 15, 60.225, 4.0, -1218.445, 0.862);
 			return;
 		end
 	end
@@ -389,11 +425,7 @@ function onPush(player, quest, npc)
 end
 
 function onNotice(player, quest, target)
-	callClientFunction(player, "delegateEvent", player, quest, "sqrwa", 300, 1, 1, 2);
-	player:CompleteQuest(quest);
-    callClientFunction(player, "delegateEvent", player, quest, "processEvent080_01", 1);
-    player:EndEvent();
-    quest:UpdateENPCs();
+	player:EndEvent();
 end
 
 function onNpcLS(player, quest, from, msgStep)
@@ -409,7 +441,7 @@ function onNpcLS(player, quest, from, msgStep)
 		end	
 				
 		-- Quick way to handle all msgs nicely.
-		player:SendGameMessageLocalizedDisplayName(quest, NPCLS_MSGS[msgPack][msgStep], MESSAGE_TYPE_NPC_LINKSHELL, 1000015);
+		player:SendGameMessageLocalizedDisplayName(quest, NPCLS_MSGS[msgPack][msgStep], MESSAGE_TYPE_NPC_LINKSHELL, 1300018); -- Miounne
 		if (msgStep >= #NPCLS_MSGS[msgPack]) then
 			quest:EndOfNpcLsMsgs();
 		else
@@ -451,6 +483,15 @@ function getJournalMapMarkerList(player, quest)
 	end	
 end
 
+-- The elemental battle (content area, director, monsters) isn't ported:
+-- accepting it skips to the battle's aftermath, as man200 does with its
+-- naming duty.
 function startDuty(player, quest)
 	player:EndEvent();
+	quest:StartSequence(SEQ_005);
+	warpTo(player, ARC_GUILD);
+end
+
+function warpTo(player, spot)
+	GetWorldManager():DoZoneChange(player, spot[1], spot[2] and "PrivateAreaMasterPast" or nil, spot[2] or 0, 15, spot[3], spot[4], spot[5], spot[6]);
 end

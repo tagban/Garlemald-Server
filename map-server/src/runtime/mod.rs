@@ -27,9 +27,11 @@
 #![allow(unused_imports)]
 
 pub mod actor_registry;
+pub mod bnpc_spawn;
 pub mod broadcast;
 pub mod clock;
 pub mod dispatcher;
+pub mod gc_apply;
 pub mod quest_apply;
 pub mod quest_hook;
 pub mod ticker;

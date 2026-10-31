@@ -69,6 +69,33 @@ pub async fn apply_runtime_lua_command(
 ) -> Handled {
     use LuaCommandKind as LC;
     match cmd {
+        // Grand Company standing: the company officers enlist and promote
+        // from their own scripts, whose commands drain here.
+        LC::JoinGC { player_id, gc } => {
+            crate::runtime::gc_apply::apply_join_gc(registry, db, world, player_id, gc).await;
+            true
+        }
+        LC::SetGCRank {
+            player_id,
+            gc,
+            rank,
+        } => {
+            crate::runtime::gc_apply::apply_set_gc_rank(registry, db, world, player_id, gc, rank)
+                .await;
+            true
+        }
+        LC::AddSeals {
+            player_id,
+            gc,
+            amount,
+        } => {
+            crate::runtime::gc_apply::apply_add_seals(db, player_id, gc, amount).await;
+            true
+        }
+        LC::PromoteGC { player_id, gc } => {
+            crate::runtime::gc_apply::apply_promote_gc(registry, db, world, player_id, gc).await;
+            true
+        }
         LC::AddQuest {
             player_id,
             quest_id,
@@ -274,6 +301,114 @@ pub async fn apply_runtime_lua_command(
             apply_unlock_aetheryte(player_id, aetheryte_id, registry, db, world).await;
             true
         }
+        // The linkshell NPC (crate::linkshells). Creation answers the
+        // script waiting on `ls_result` with Meteor's result code.
+        LC::LinkshellCreate {
+            player_id,
+            name,
+            crest,
+        } => {
+            let code =
+                crate::linkshells::create(registry, world, db, player_id, &name, crest).await;
+            if let Some(lua) = lua {
+                let cmds = lua.fire_owner_signal_and_drain(player_id, "ls_result", code);
+                Box::pin(crate::event::dispatcher::apply_resumed_event_commands(
+                    player_id, cmds, registry, world, db, lua,
+                ))
+                .await;
+            }
+            true
+        }
+        LC::LinkshellCrestModify {
+            player_id,
+            name,
+            crest,
+        } => {
+            crate::linkshells::change_crest(registry, world, db, player_id, &name, crest).await;
+            true
+        }
+        LC::LinkshellDelete { player_id, name } => {
+            crate::linkshells::disband(registry, world, db, player_id, &name).await;
+            true
+        }
+        LC::LinkshellInvite {
+            player_id,
+            name,
+            invitee,
+        } => {
+            crate::linkshells::invite(registry, world, db, player_id, &name, invitee).await;
+            true
+        }
+        LC::LinkshellInviteCancel { player_id } => {
+            crate::linkshells::cancel_invite(registry, world, player_id).await;
+            true
+        }
+        LC::LinkshellLeave { player_id, name } => {
+            crate::linkshells::leave(registry, world, db, player_id, &name).await;
+            true
+        }
+        LC::LinkshellKick {
+            player_id,
+            name,
+            kicked,
+        } => {
+            crate::linkshells::kick(registry, world, db, player_id, &name, &kicked).await;
+            true
+        }
+        LC::LinkshellChangeActive { player_id, name } => {
+            crate::linkshells::change_active(registry, world, db, player_id, &name).await;
+            true
+        }
+        LC::LinkshellRankChange {
+            player_id,
+            name,
+            member,
+            rank,
+        } => {
+            crate::linkshells::change_rank(registry, world, db, player_id, &name, &member, rank)
+                .await;
+            true
+        }
+        LC::PartyInvite { player_id, target } => {
+            crate::parties::invite(registry, world, db, player_id, &target).await;
+            true
+        }
+        LC::PartyLeave { player_id } => {
+            crate::parties::leave(registry, world, db, player_id).await;
+            true
+        }
+        LC::PartyDisband { player_id } => {
+            crate::parties::disband(registry, world, player_id).await;
+            true
+        }
+        LC::PartyKick { player_id, target } => {
+            crate::parties::kick(registry, world, db, player_id, &target).await;
+            true
+        }
+        LC::PartyPromote { player_id, target } => {
+            crate::parties::promote(registry, world, db, player_id, &target).await;
+            true
+        }
+        // 0x2711 a party offer, 0x2712 a linkshell one
+        LC::GroupInviteResult {
+            player_id,
+            group_type,
+            result,
+        } => {
+            if group_type == 0x2712 {
+                crate::linkshells::invite_result(registry, world, db, player_id, result).await;
+            } else if group_type == crate::parties::INVITE_COMMAND_PARTY {
+                crate::parties::invite_result(registry, world, db, player_id, result).await;
+            } else {
+                tracing::info!(
+                    player = player_id,
+                    group_type,
+                    result,
+                    "group invite result for a group this server doesn't handle yet"
+                );
+            }
+            true
+        }
         // `player:SendGameMessageLocalizedDisplayName(...)` — the NPC
         // linkshell narration line (0x0161 DispId-sender family).
         LC::SendGameMessageLocalizedDisplayName {
@@ -386,6 +521,26 @@ pub async fn apply_runtime_lua_command(
             }
             true
         }
+        // Quest items handed over in a talk (a key item delivered to its
+        // recipient) drain here, not through the processor.
+        LC::RemoveItem {
+            actor_id,
+            item_package,
+            catalog_id,
+            quantity,
+        } => {
+            apply_remove_item(
+                actor_id,
+                item_package,
+                catalog_id,
+                quantity,
+                registry,
+                Some(world),
+                db,
+            )
+            .await;
+            true
+        }
         LC::AddItemToRetainer {
             retainer_id,
             item_package,
@@ -421,6 +576,42 @@ pub async fn apply_runtime_lua_command(
         LC::HandInRegionalLeve { player_id, leve_id } => {
             let _ = apply_regional_leve_hand_in(player_id, leve_id, registry, Some(world), db, lua)
                 .await;
+            true
+        }
+        LC::AddGuildleve {
+            player_id,
+            guildleve_id,
+        } => {
+            crate::leve::battle::add(player_id, guildleve_id, registry, world, db).await;
+            true
+        }
+        LC::StartBattleleve {
+            player_id,
+            guildleve_id,
+            difficulty,
+        } => {
+            crate::leve::battle::start(
+                player_id,
+                guildleve_id,
+                difficulty,
+                registry,
+                world,
+                db,
+                lua,
+                crate::runtime::clock::server_now_ms(),
+            )
+            .await;
+            true
+        }
+        LC::AbandonBattleleve { player_id } => {
+            crate::leve::battle::abandon(
+                player_id,
+                registry,
+                world,
+                db,
+                crate::runtime::clock::server_now_ms(),
+            )
+            .await;
             true
         }
         LC::AcceptRegionalLeve {
@@ -731,11 +922,24 @@ pub async fn apply_runtime_lua_command(
             .await;
             true
         }
+        LC::LeaveContent { player_id } => {
+            apply_leave_content(player_id, registry, world, lua).await;
+            true
+        }
         LC::ContentFinished {
             parent_zone_id,
             area_name,
+            instance_id,
         } => {
-            apply_content_finished(parent_zone_id, &area_name, registry, world, lua).await;
+            apply_content_finished(
+                parent_zone_id,
+                &area_name,
+                instance_id,
+                registry,
+                world,
+                lua,
+            )
+            .await;
             true
         }
         // DoEmote reaches the runtime drain when a *command* script emits it —
@@ -745,6 +949,40 @@ pub async fn apply_runtime_lua_command(
         // onEmote hook uses). Without this arm the emote animation packet was
         // dropped, so emotes only played inside a scripted quest interaction.
         // Mirrors the processor's `apply_do_emote` fan-out. (Garlemald-Server #46.)
+        // `player:SetSNpc(...)` from a quest talk (Fade to White's Path
+        // companion choice) reaches this drain, not the login applier, and
+        // fell through as unhandled: the choice was never kept, so every
+        // later companion scene was given skin 0 and stalled. Mirrors the
+        // processor's `apply_set_snpc`.
+        LC::SetSNpc {
+            player_id,
+            nickname,
+            actor_class_id,
+            personality,
+        } => {
+            if let Some(handle) = registry.get(player_id).await {
+                let skin = actor_class_id.saturating_sub(1_070_000) as u8;
+                let coordinate = {
+                    let mut c = handle.character.write().await;
+                    c.chara.snpc_nickname = nickname.clone();
+                    c.chara.snpc_skin = skin;
+                    c.chara.snpc_personality = personality;
+                    c.chara.snpc_coordinate
+                };
+                match db
+                    .save_snpc(player_id, nickname, skin, personality, coordinate)
+                    .await
+                {
+                    Ok(()) => {
+                        tracing::info!(player = player_id, skin, personality, "SetSNpc applied")
+                    }
+                    Err(e) => {
+                        tracing::warn!(player = player_id, err = %e, "SetSNpc: DB persist failed")
+                    }
+                }
+            }
+            true
+        }
         LC::DoEmote {
             actor_id,
             target_actor_id,
@@ -769,6 +1007,16 @@ pub async fn apply_runtime_lua_command(
                 crate::runtime::dispatcher::broadcast_to_neighbours(
                     world, registry, actor_id, bytes,
                 )
+                .await;
+                // the Bombard King of `worldend` only falls to /firedance (boxed: its
+                // death runs back through this applier)
+                Box::pin(crate::command_processor::world_end::on_emote(
+                    actor_id,
+                    target_actor_id,
+                    emote_id,
+                    registry,
+                    world,
+                ))
                 .await;
             }
             true
@@ -1137,19 +1385,18 @@ pub(crate) async fn apply_party_add_member_roster(
 /// wire half of `currentParty:AddMember`. Shared by the runtime drain
 /// (one emission per batch), the processor's content-area partition
 /// loop, and the single-command applier.
+///
+/// The roster is the player's party (crate::parties) and then the content
+/// allies. Returns the group id sent and the roster size.
 pub(crate) async fn emit_party_group_trio(
     leader_actor_id: u32,
     registry: &ActorRegistry,
     world: &WorldManager,
-) {
-    let Some(leader_handle) = registry.get(leader_actor_id).await else {
-        return;
-    };
+) -> Option<(u64, usize)> {
+    let leader_handle = registry.get(leader_actor_id).await?;
     let session_id = leader_handle.session_id;
-    let Some(snap) = world.session(session_id).await else {
-        return;
-    };
-    let roster_ids: Vec<u32> = snap.transient_party_members.clone();
+    let snap = world.session(session_id).await?;
+    let roster_ids = crate::parties::roster(leader_actor_id, &snap.transient_party_members);
     let composition_ordinal = snap.party_group_ordinal;
 
     // Build the roster: leader first, then the transient members.
@@ -1196,11 +1443,15 @@ pub(crate) async fn emit_party_group_trio(
     // login id; multi-member compositions get a NEW id keyed by the
     // session ordinal — see `party_group_index`'s doc for the retail
     // evidence).
-    let group_index = crate::packets::send::groups::party_group_index(
-        leader_actor_id,
-        members.len(),
-        composition_ordinal,
-    );
+    let group_index = crate::parties::solo_group(leader_actor_id)
+        .filter(|_| members.len() <= 1)
+        .unwrap_or_else(|| {
+            crate::packets::send::groups::party_group_index(
+                leader_actor_id,
+                members.len(),
+                composition_ordinal,
+            )
+        });
     let location_code = leader_handle.zone_id as u64;
     let sequence_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1246,7 +1497,7 @@ pub(crate) async fn emit_party_group_trio(
             session = session_id,
             "PartyAddMember: roster updated but client gone — wire emit skipped",
         );
-        return;
+        return None;
     };
     for mut sub in pkts {
         sub.set_target_id(session_id);
@@ -1259,6 +1510,7 @@ pub(crate) async fn emit_party_group_trio(
         group_index = format!("0x{group_index:016X}"),
         "party group trio emitted for current roster",
     );
+    Some((group_index, members.len()))
 }
 
 /// `currentParty:AddMember(actor)` — single-command path: roster update
@@ -1385,6 +1637,19 @@ async fn apply_change_speed(
     };
     let mut sub =
         crate::packets::send::actor::build_set_actor_speed(player_id, stop, walk, run, active);
+    // Meteor's ChangeSpeed flags the speed for the area broadcast, so
+    // players nearby animate a mounted rider at riding pace instead of
+    // sliding a walking avatar around.
+    if let Some(zone) = world.zone(handle.zone_id).await {
+        crate::runtime::broadcast::broadcast_around_actor(
+            world,
+            registry,
+            &zone,
+            player_id,
+            sub.to_bytes(),
+        )
+        .await;
+    }
     sub.set_target_id(session_id);
     client.send_bytes(sub.to_bytes()).await;
     tracing::debug!(
@@ -1838,17 +2103,21 @@ async fn apply_kick_event(
 pub(crate) async fn apply_content_finished(
     parent_zone_id: u32,
     area_name: &str,
+    instance_id: u32,
     registry: &ActorRegistry,
     world: &WorldManager,
     lua: Option<&Arc<LuaEngine>>,
 ) {
-    // 1. Owning session — the one whose active content matches this
-    //    parent zone (+ area name when the caller knew it).
+    // 1. Owning session — the one running this copy when the caller knew
+    //    it, else the one whose active content matches this parent zone
+    //    (+ area name when the caller knew that).
     let mut owner: Option<crate::data::Session> = None;
     for snap in world.all_sessions().await {
         if let Some(active) = snap.active_content_script.as_ref()
             && active.parent_zone_id == parent_zone_id
             && (area_name.is_empty() || active.area_name == area_name)
+            && (instance_id == 0 || active.instance_id == instance_id)
+            && !active.party_member
         {
             owner = Some(snap);
             break;
@@ -1891,6 +2160,24 @@ pub(crate) async fn apply_content_finished(
     let despawn_count = despawn.len();
     for actor_id in despawn {
         apply_despawn_actor(parent_zone_id, actor_id, registry, world).await;
+    }
+    // The copy is over: free its slot, and drop the members' views of it.
+    // Its players keep their tag until they warp out (the zone change
+    // clears it).
+    crate::content_instance::release(active.instance_id);
+    if active.instance_id != 0 {
+        for mut member in world.all_sessions().await {
+            if member.id != session_id
+                && member
+                    .active_content_script
+                    .as_ref()
+                    .is_some_and(|a| a.instance_id == active.instance_id)
+            {
+                member.active_content_script = None;
+                member.pending_content_kick_event = None;
+                world.upsert_session(member).await;
+            }
+        }
     }
 
     // 3 + 4. Roster + content-script clears. The content director was
@@ -1961,6 +2248,82 @@ pub(crate) async fn apply_content_finished(
         purged_coroutines = purged,
         "ContentFinished applied (full teardown)",
     );
+}
+
+/// A player leaving a content copy (walking out, warping away, logging
+/// off). A party member just drops their view of it. The owner hands the
+/// copy to a member still inside (its hooks and spawns move with it), or,
+/// when nobody is left, the copy finishes (`apply_content_finished`).
+pub(crate) async fn apply_leave_content(
+    player_id: u32,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    lua: Option<&Arc<LuaEngine>>,
+) {
+    let Some(handle) = registry.get(player_id).await else {
+        return;
+    };
+    let Some(mut snap) = world.session(handle.session_id).await else {
+        return;
+    };
+    let Some(active) = snap.active_content_script.clone() else {
+        return;
+    };
+    if active.instance_id == 0 {
+        // Untracked content (no slot was free): the old single-owner path.
+        apply_content_finished(
+            active.parent_zone_id,
+            &active.area_name,
+            0,
+            registry,
+            world,
+            lua,
+        )
+        .await;
+        return;
+    }
+    if active.party_member {
+        snap.active_content_script = None;
+        snap.pending_content_kick_event = None;
+        world.upsert_session(snap).await;
+        return;
+    }
+    let heir = world.all_sessions().await.into_iter().find(|m| {
+        m.id != snap.id
+            && m.active_content_script
+                .as_ref()
+                .is_some_and(|a| a.instance_id == active.instance_id)
+    });
+    match heir {
+        Some(mut heir) => {
+            if let Some(a) = heir.active_content_script.as_mut() {
+                a.party_member = false;
+                a.spawned_actor_ids = active.spawned_actor_ids.clone();
+            }
+            let heir_id = heir.id;
+            world.upsert_session(heir).await;
+            snap.active_content_script = None;
+            snap.pending_content_kick_event = None;
+            world.upsert_session(snap).await;
+            tracing::info!(
+                instance = active.instance_id,
+                from = handle.session_id,
+                to = heir_id,
+                "content copy handed to a party member still inside",
+            );
+        }
+        None => {
+            apply_content_finished(
+                active.parent_zone_id,
+                &active.area_name,
+                active.instance_id,
+                registry,
+                world,
+                lua,
+            )
+            .await;
+        }
+    }
 }
 
 /// B3 of the SEQ_005 unblock plan — port of C# `Chara::SetMod`.
@@ -2133,6 +2496,23 @@ pub(crate) async fn apply_do_zone_change(
     world: &WorldManager,
     lua: Option<&Arc<LuaEngine>>,
 ) {
+    // A jailed character (crate::jail) only goes to their gaol cell: a
+    // teleport, a script or a GM command can't take them out before !pardon.
+    let jail_zone = crate::jail::get().zone;
+    let (zone_id, private_area, private_area_type, x, y, z) =
+        match db.jail_of_character(player_id).await {
+            Ok(Some((cell, _))) if zone_id != jail_zone => {
+                let c = crate::jail::cell(cell);
+                tracing::info!(
+                    player = player_id,
+                    from_dest = zone_id,
+                    cell,
+                    "jailed: zone change sent to the gaol instead"
+                );
+                (jail_zone, None, 0, c.x, c.y, c.z)
+            }
+            _ => (zone_id, private_area, private_area_type, x, y, z),
+        };
     let Some(handle) = registry.get(player_id).await else {
         tracing::warn!(player = player_id, "DoZoneChange: actor missing");
         return;
@@ -4463,28 +4843,24 @@ async fn resend_initial_equipment(
     );
 }
 
-/// Garlemald-Server #28 — load the player's equipped `(equip_slot,
-/// catalog_id)` pairs ready for `build_set_initial_equipment`. Shared by
-/// the FIX-A mid-session re-send (above) and the FIX-B zone-in bundle
-/// (`world_manager::send_zone_in_bundle`). The catalog id is the item
-/// graphic the client renders; `load_equipped_catalog_ids` resolves it
-/// by joining `characters_inventory_equipment` → `server_items`.
+/// The player's equipped gear as `(equip_slot, link)` pairs for
+/// `build_set_initial_equipment` (0x014E, the same body as
+/// LinkedItemListX08). `link` is the bag position the gear slot points
+/// at: bag slot in the low 16 bits, item package in the high 16 (Meteor
+/// `SetInitialEquipmentPacket.SetItem(slot, itemSlot)`). Sending catalog
+/// ids here linked every gear slot to a bag position that doesn't exist.
+/// Shared by the mid-session re-send (above) and the zone-in bundle.
 pub async fn load_initial_equipment_pairs(
     db: &Database,
     player_id: u32,
     class_id: u8,
 ) -> Vec<(u16, u32)> {
-    let mut pairs: Vec<(u16, u32)> = db
-        .load_equipped_catalog_ids(player_id, class_id)
+    db.equipment_links(player_id, class_id)
         .await
         .unwrap_or_default()
         .into_iter()
-        .collect();
-    // Deterministic order — the HashMap iteration order is otherwise
-    // nondeterministic, which would make the packet bytes (and tests)
-    // flaky.
-    pairs.sort_by_key(|(slot, _)| *slot);
-    pairs
+        .map(|(equip_slot, slot, package)| (equip_slot, slot as u32 | (package as u32) << 16))
+        .collect()
 }
 
 /// Tier 3 #13 — advance any fieldcraft leves the player currently
@@ -5129,6 +5505,9 @@ pub async fn apply_add_gil(
     match db.add_gil(actor_id, amount).await {
         Ok(total) => {
             tracing::info!(actor = actor_id, delta = amount, total, "AddGil applied",);
+            if let Some(handle) = registry.get(actor_id).await {
+                handle.character.write().await.chara.gil = total;
+            }
             if let Some(world) = world {
                 send_gil_update(actor_id, amount, registry, world, db).await;
             }
@@ -6392,6 +6771,16 @@ pub async fn apply_quest_on_notice(
             mp: c.chara.mp,
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
+            current_gil: c.chara.gil.max(0) as u32,
+            // Class, level and Grand Company standing: quest rewards
+            // (`AddExp` on `state_mainSkill[0]`) and company gates read them.
+            current_class: c.chara.class.max(0) as u8,
+            current_level: c.chara.level,
+            current_job: c.chara.current_job as u8,
+            gc_current: c.chara.gc_current,
+            gc_rank_limsa: c.chara.gc_rank_limsa,
+            gc_rank_gridania: c.chara.gc_rank_gridania,
+            gc_rank_uldah: c.chara.gc_rank_uldah,
             active_quests: c
                 .quest_journal
                 .slots
@@ -6963,6 +7352,16 @@ async fn fire_quest_npc_hook_via_command(
             mp: c.chara.mp,
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
+            current_gil: c.chara.gil.max(0) as u32,
+            // Class, level and Grand Company standing: quest rewards
+            // (`AddExp` on `state_mainSkill[0]`) and company gates read them.
+            current_class: c.chara.class.max(0) as u8,
+            current_level: c.chara.level,
+            current_job: c.chara.current_job as u8,
+            gc_current: c.chara.gc_current,
+            gc_rank_limsa: c.chara.gc_rank_limsa,
+            gc_rank_gridania: c.chara.gc_rank_gridania,
+            gc_rank_uldah: c.chara.gc_rank_uldah,
             active_quests: c
                 .quest_journal
                 .slots
@@ -7183,6 +7582,16 @@ pub async fn fire_quest_on_talk_via_command(
             mp: c.chara.mp,
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
+            current_gil: c.chara.gil.max(0) as u32,
+            // Class, level and Grand Company standing: quest rewards
+            // (`AddExp` on `state_mainSkill[0]`) and company gates read them.
+            current_class: c.chara.class.max(0) as u8,
+            current_level: c.chara.level,
+            current_job: c.chara.current_job as u8,
+            gc_current: c.chara.gc_current,
+            gc_rank_limsa: c.chara.gc_rank_limsa,
+            gc_rank_gridania: c.chara.gc_rank_gridania,
+            gc_rank_uldah: c.chara.gc_rank_uldah,
             active_quests: c
                 .quest_journal
                 .slots
@@ -7379,6 +7788,16 @@ async fn fire_quest_hook(
             mp: c.chara.mp,
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
+            current_gil: c.chara.gil.max(0) as u32,
+            // Class, level and Grand Company standing: quest rewards
+            // (`AddExp` on `state_mainSkill[0]`) and company gates read them.
+            current_class: c.chara.class.max(0) as u8,
+            current_level: c.chara.level,
+            current_job: c.chara.current_job as u8,
+            gc_current: c.chara.gc_current,
+            gc_rank_limsa: c.chara.gc_rank_limsa,
+            gc_rank_gridania: c.chara.gc_rank_gridania,
+            gc_rank_uldah: c.chara.gc_rank_uldah,
             active_quests: c
                 .quest_journal
                 .slots
@@ -7529,7 +7948,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("garlemald-onnotice-{nanos}-{seq}"));
+        let dir = common::test_tmp::dir().join(format!("garlemald-onnotice-{nanos}-{seq}"));
         std::fs::create_dir_all(dir.join("quests/man")).unwrap();
         dir
     }
@@ -7542,7 +7961,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("garlemald-onnotice-{nanos}-{seq}.db"))
+        common::test_tmp::dir().join(format!("garlemald-onnotice-{nanos}-{seq}.db"))
     }
 
     /// `apply_quest_on_notice` resolves the script, fires
@@ -7840,9 +8259,9 @@ mod tests {
     }
 
     /// Garlemald-Server #28 — `load_initial_equipment_pairs` builds the
-    /// `&[(equip_slot, catalog_id)]` slice both the FIX-A mid-session
+    /// `&[(equip_slot, bag link)]` slice both the FIX-A mid-session
     /// re-send and the FIX-B zone-in bundle feed into
-    /// `build_set_initial_equipment`. Verifies (a) the slot→catalog
+    /// `build_set_initial_equipment`. Verifies (a) the slot→bag-link
     /// mapping is correct, (b) the result is sorted by equip slot
     /// (deterministic packet bytes), and (c) a character with no
     /// equipment yields an empty slice (the legacy zone-in behaviour).
@@ -7855,7 +8274,7 @@ mod tests {
         assert!(empty.is_empty(), "no equipment → empty slice");
 
         // Seed two bag items, equip them into out-of-order gear slots, and
-        // confirm the pairs come back sorted with the right catalog ids.
+        // confirm the pairs come back sorted with the right bag links.
         // `add_harvest_item` lands NORMAL slots 0 (4030010) and 1 (8050245).
         db.add_harvest_item(42, 4030010, 1, 1).await.unwrap();
         db.add_harvest_item(42, 8050245, 1, 1).await.unwrap();
@@ -7885,10 +8304,11 @@ mod tests {
         let pairs = load_initial_equipment_pairs(&db, 42, 3).await;
         assert_eq!(pairs.len(), 2, "two equipped slots");
         // Sorted by equip slot: main-hand (0) first, legs (10) second.
+        // Each gear slot links to its bag position (slot | package << 16).
         assert_eq!(pairs[0].0, crate::actor::player::SLOT_MAINHAND);
-        assert_eq!(pairs[0].1, 4030010, "main-hand catalog id");
+        assert_eq!(pairs[0].1, 0, "main-hand links bag slot 0");
         assert_eq!(pairs[1].0, 10);
-        assert_eq!(pairs[1].1, 8050245, "legs catalog id");
+        assert_eq!(pairs[1].1, 1, "legs link bag slot 1");
     }
 }
 
@@ -8223,6 +8643,8 @@ mod end_event_before_warp_tests {
             y: 61.71,
             z: -1120.79,
             rotation: 0.0,
+            instance_id: 0,
+            with_party: false,
         }
     }
 

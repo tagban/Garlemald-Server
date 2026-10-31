@@ -229,6 +229,12 @@ pub struct Session {
     /// has — the fix for "NPCs only appear within 50y of a warp point".
     /// (Garlemald-Server #46 live test.)
     pub actor_instance_list: std::collections::HashSet<u32>,
+    /// Other players this client currently has spawned (kept apart from
+    /// `actor_instance_list`, whose NPC rules — add-only populace, the
+    /// warp keep-list — don't fit players who walk away and log off).
+    /// Reset by every zone-in bundle (its wipe drops them client-side);
+    /// filled and pruned by `send_instance_update`.
+    pub known_players: std::collections::HashSet<u32>,
 }
 
 /// Snapshot of a player's currently-active scripted content area.
@@ -268,6 +274,12 @@ pub struct ActiveContentScript {
     /// never `AddMember`'d (SEQ_005's `openingstoper` event trigger).
     /// (#28 S1.3.)
     pub spawned_actor_ids: Vec<u32>,
+    /// The copy this session is in (`crate::content_instance`); its actors
+    /// and players carry it as their zone-core instance tag. 0 = none.
+    pub instance_id: u32,
+    /// A party member who entered someone else's copy: the content's hooks
+    /// (`onUpdate`, the teardown) run on the owner's session only.
+    pub party_member: bool,
 }
 
 /// Runtime-only snapshot of an in-world retainer. Holds the minimal

@@ -455,7 +455,18 @@ impl UserData for LuaNpc {
         methods.add_method("GetUniqueId", |_, this, _: ()| {
             Ok(this.base.unique_id.clone())
         });
-        methods.add_method("GetActorClassId", |_, this, _: ()| Ok(this.actor_class_id));
+        // `npc.GetActorClassId()` (dot, no self) as well as the colon form:
+        // Meteor's runtime took both and 55 quest `onTalk`s use the dot.
+        // Answered from `__index` so the dot call gets a bound function.
+        methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
+            if key == "GetActorClassId" {
+                let id = this.actor_class_id;
+                return lua
+                    .create_function(move |_, _: mlua::Variadic<Value>| Ok(id))
+                    .map(Value::Function);
+            }
+            Ok(Value::Nil)
+        });
         methods.add_method("GetZoneID", |_, this, _: ()| Ok(this.base.zone_id));
         methods.add_method("SetQuestGraphic", |_, this, graphic: u8| {
             push(
@@ -591,6 +602,10 @@ pub struct PlayerSnapshot {
     pub completed_quests: Vec<u32>,
     /// Active quest ids.
     pub active_quests: Vec<u32>,
+    /// Classes of the NPCs the player's quests answer for: quest offers'
+    /// givers and the NPCs a taken quest has marked. An NPC's own script
+    /// stays quiet for these (the quest hook that runs after it talks).
+    pub quest_npcs: Vec<u32>,
     /// Per-active-quest state — `(quest_id, sequence, flags, counters)`
     /// snapshotted at build time so [`LuaQuestHandle`] / [`LuaQuestDataHandle`]
     /// can answer getters without a round-trip back to the Rust side.
@@ -761,6 +776,7 @@ impl From<&crate::actor::Player> for PlayerSnapshot {
             current_event_name: p.player.current_event_name.clone(),
             current_event_type: p.player.current_event_type,
             completed_quests,
+            quest_npcs: p.character.quest_npc_classes(),
             active_quests,
             active_quest_states,
             unlocked_aetherytes,
@@ -1474,10 +1490,44 @@ impl UserData for LuaPlayer {
                 );
                 return Ok(());
             }
-            tracing::debug!(
-                player = this.snapshot.actor_id,
-                gl_id,
-                "AddGuildleve captured (non-regional id — C# guildleve subsystem not wired)",
+            // a battle leve (gamedata_guildleves): crate::leve::battle
+            push(
+                &this.queue,
+                LuaCommand::AddGuildleve {
+                    player_id: this.snapshot.actor_id,
+                    guildleve_id: gl_id,
+                },
+            );
+            Ok(())
+        });
+        // Battle leves at the camp aetheryte (AetheryteParent.lua):
+        // start one, ask which one is running, give it up.
+        methods.add_method(
+            "StartGuildleve",
+            |_, this, (gl_id, difficulty): (u32, Option<u8>)| {
+                push(
+                    &this.queue,
+                    LuaCommand::StartBattleleve {
+                        player_id: this.snapshot.actor_id,
+                        guildleve_id: gl_id,
+                        difficulty: difficulty.unwrap_or(1),
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method("GetGuildleve", |_, this, _: ()| {
+            Ok(match crate::leve::battle::current(this.snapshot.actor_id) {
+                Some((id, difficulty)) => (Some(id), Some(difficulty)),
+                None => (None, None),
+            })
+        });
+        methods.add_method("AbandonGuildleve", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::AbandonBattleleve {
+                    player_id: this.snapshot.actor_id,
+                },
             );
             Ok(())
         });
@@ -2007,7 +2057,7 @@ impl UserData for LuaPlayer {
             Ok(this.snapshot.is_trade_accepted)
         });
         methods.add_method("IsPartyLeader", |_, this, _: ()| {
-            Ok(this.snapshot.is_party_leader)
+            Ok(crate::parties::is_leader(this.snapshot.actor_id))
         });
         methods.add_method("IsGM", |_, this, _: ()| Ok(this.snapshot.is_gm));
 
@@ -2058,6 +2108,11 @@ impl UserData for LuaPlayer {
         });
         methods.add_method("IsQuestCompleted", |_, this, id: u32| {
             Ok(this.snapshot.completed_quests.contains(&id))
+        });
+        // Whether one of the player's quests answers for an NPC of this
+        // class (an offer it gives, or a taken quest's marker on it).
+        methods.add_method("HasQuestNpc", |_, this, class_id: u32| {
+            Ok(this.snapshot.quest_npcs.contains(&class_id))
         });
         methods.add_method("CanAcceptQuest", |_, this, id: u32| {
             Ok(!this.snapshot.completed_quests.contains(&id)
@@ -2928,6 +2983,18 @@ impl UserData for LuaPlayer {
             Ok(Value::UserData(ud))
         });
         methods.add_method("GetGuildleveDirector", |_, _this, _: ()| Ok(Value::Nil));
+        // `player:LeaveContent()` — walk out of the player's content copy:
+        // the copy goes on with their party, or ends with the last one out.
+        // Warp the player out after it.
+        methods.add_method("LeaveContent", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::LeaveContent {
+                    player_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
         methods.add_method("SetLoginDirector", |_, this, director: Value| {
             // Extract director identity from the userdata. Beyond the
             // actor_id (used for ScriptBind LuaParams), we ALSO pull
@@ -3125,11 +3192,51 @@ impl UserData for LuaPlayer {
         // / `QuitGame` bindings live earlier in this body.
 
         // --- Party ----------------------------------------------------------
-        methods.add_method("PartyLeave", |_, _this, _: ()| Ok(()));
-        methods.add_method("PartyDisband", |_, _this, _: ()| Ok(()));
-        methods.add_method("PartyKickPlayer", |_, _this, _name: String| Ok(()));
-        methods.add_method("PartyOustPlayer", |_, _this, _name: String| Ok(()));
-        methods.add_method("PartyPromote", |_, _this, _name: String| Ok(()));
+        // crate::parties; the scripts pass a name or an actor id.
+        methods.add_method("PartyLeave", |_, this, _: mlua::MultiValue| {
+            push(
+                &this.queue,
+                LuaCommand::PartyLeave {
+                    player_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
+        methods.add_method("PartyDisband", |_, this, _: mlua::MultiValue| {
+            push(
+                &this.queue,
+                LuaCommand::PartyDisband {
+                    player_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
+        for name in ["PartyKickPlayer", "PartyOustPlayer"] {
+            methods.add_method(name, |_, this, target: mlua::Value| {
+                if let Some(target) = party_target(&target) {
+                    push(
+                        &this.queue,
+                        LuaCommand::PartyKick {
+                            player_id: this.snapshot.actor_id,
+                            target,
+                        },
+                    );
+                }
+                Ok(())
+            });
+        }
+        methods.add_method("PartyPromote", |_, this, target: mlua::Value| {
+            if let Some(target) = party_target(&target) {
+                push(
+                    &this.queue,
+                    LuaCommand::PartyPromote {
+                        player_id: this.snapshot.actor_id,
+                        target,
+                    },
+                );
+            }
+            Ok(())
+        });
         methods.add_method("RemoveFromCurrentPartyAndCleanup", |_, _this, _: ()| Ok(()));
 
         // --- Movement -------------------------------------------------------
@@ -3522,6 +3629,7 @@ impl UserData for LuaZone {
                         z,
                         rotation: rotation.unwrap_or(0.0),
                         expected_actor_id,
+                        instance_id: 0,
                     },
                 );
                 let actor = LuaActor {
@@ -3591,9 +3699,21 @@ impl UserData for LuaZone {
                     Some(z) if z != 0 => z,
                     _ => this.snapshot.zone_id,
                 };
+                // Each run is its own copy: a party's or a solo player's.
+                // Its slot keeps its director, area master and spawns from
+                // colliding with another copy running in the same zone.
+                let instance = crate::content_instance::allocate(parent_zone_id);
+                if instance.is_none() {
+                    tracing::warn!(
+                        zone = parent_zone_id,
+                        area = %area_name,
+                        "CreateContentArea: every content slot in the zone is taken",
+                    );
+                }
+                let (instance_id, slot) = instance.map(|i| (i.id, i.slot)).unwrap_or((0, 0));
                 let director_actor_id = crate::director::director::encode_director_actor_id(
                     parent_zone_id,
-                    /* director_local_id */ 1,
+                    crate::content_instance::director_local_id(slot),
                 );
                 // Content area gets its own actor id sharing the
                 // director's encoding. The encoded local-id field is
@@ -3606,8 +3726,10 @@ impl UserData for LuaZone {
                 // (0x40000) that survives the mask and won't collide
                 // with normal sequential directors. Synthetic but
                 // stable across calls.
-                let content_area_actor_id =
-                    crate::director::director::encode_director_actor_id(parent_zone_id, 0x40000);
+                let content_area_actor_id = crate::director::director::encode_director_actor_id(
+                    parent_zone_id,
+                    crate::content_instance::area_master_local_id(slot),
+                );
                 // Extract the player's actor id from the first arg so
                 // the runtime handler can look up the player snapshot
                 // and fire the content script's `onCreate` hook
@@ -3632,6 +3754,7 @@ impl UserData for LuaZone {
                         director_name: director_name.clone(),
                         director_actor_id,
                         content_area_actor_id,
+                        instance_id,
                     },
                 );
                 let handle = LuaContentArea {
@@ -3640,6 +3763,8 @@ impl UserData for LuaZone {
                     area_class_path,
                     director_name: director_name.clone(),
                     director_actor_id,
+                    instance_id,
+                    slot,
                     queue: this.queue.clone(),
                     // C2b — the runtime DoZoneChangeContent path
                     // (`apply_do_zone_change_content`) re-creates a
@@ -3680,6 +3805,7 @@ impl UserData for LuaZone {
                 LuaCommand::ContentFinished {
                     parent_zone_id: this.snapshot.zone_id,
                     area_name: String::new(),
+                    instance_id: 0,
                 },
             );
             Ok(())
@@ -3807,6 +3933,10 @@ pub struct LuaContentArea {
     pub area_class_path: String,
     pub director_name: String,
     pub director_actor_id: u32,
+    /// The copy this handle drives (`crate::content_instance`): its id
+    /// tags the copy's actors, its slot numbers them. 0/0 = none.
+    pub instance_id: u32,
+    pub slot: u32,
     pub queue: Arc<Mutex<CommandQueue>>,
     /// Phase C2b — pre-built roster snapshots so `area:GetPlayers()`
     /// / `area:GetAllies()` / `area:GetMonsters()` can yield real
@@ -3866,7 +3996,8 @@ impl UserData for LuaContentArea {
                 // id. The pmeteor `+5` quirk is reproduced inside
                 // `apply_spawn_actor` to keep the id formula one-place.
                 let suffix = (common::utils::murmur_hash2(&unique_id, 0) & 0xFFF) as u32;
-                let actor_number = 0x60000u32 | suffix;
+                let actor_number =
+                    crate::content_instance::spawn_actor_number(this.slot, 0x60000u32 | suffix);
                 let expected_actor_id =
                     (4u32 << 28) | (zone_id << 19) | ((actor_number + 5) & 0x7FFFF);
                 push(
@@ -3880,6 +4011,7 @@ impl UserData for LuaContentArea {
                         z,
                         rotation: rotation.unwrap_or(0.0),
                         expected_actor_id,
+                        instance_id: this.instance_id,
                     },
                 );
                 let actor = LuaActor {
@@ -3981,6 +4113,7 @@ impl UserData for LuaContentArea {
                 LuaCommand::ContentFinished {
                     parent_zone_id: this.parent_zone_id,
                     area_name: this.area_name.clone(),
+                    instance_id: this.instance_id,
                 },
             );
             Ok(())
@@ -4090,6 +4223,54 @@ impl UserData for LuaWorldManager {
                         y,
                         z,
                         rotation,
+                        instance_id: area.instance_id,
+                        with_party: false,
+                    },
+                );
+                Ok(())
+            },
+        );
+
+        // `GetWorldManager():DoZoneChangeContentParty(player, contentArea, x, y,
+        // z, rot, spawnType)` — `DoZoneChangeContent` for a party: the
+        // player's party members in the same zone enter the same copy
+        // (dungeons). Quest duties keep using the solo call.
+        methods.add_method(
+            "DoZoneChangeContentParty",
+            |_,
+             this,
+             (player, content_area, x, y, z, rotation, spawn_type): (
+                mlua::AnyUserData,
+                mlua::AnyUserData,
+                f32,
+                f32,
+                f32,
+                f32,
+                Option<u8>,
+            )| {
+                // Same fix shape as commit c8c549d's DoZoneChange:
+                // `player` is a LuaPlayer userdata in scripts (the
+                // Lua call shape is `WM:DoZoneChangeContent(player,
+                // contentArea, x, y, z, rot, spawnType)`); typing it
+                // as u32 produced "error converting Lua userdata to
+                // u32" at runtime. Extract actor_id via the LuaPlayer
+                // borrow.
+                let p = player.borrow::<LuaPlayer>()?;
+                let area = content_area.borrow::<LuaContentArea>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::DoZoneChangeContent {
+                        player_id: p.snapshot.actor_id,
+                        parent_zone_id: area.parent_zone_id,
+                        area_name: area.area_name.clone(),
+                        director_actor_id: area.director_actor_id,
+                        spawn_type: spawn_type.unwrap_or(16),
+                        x,
+                        y,
+                        z,
+                        rotation,
+                        instance_id: area.instance_id,
+                        with_party: true,
                     },
                 );
                 Ok(())
@@ -4126,13 +4307,21 @@ impl UserData for LuaWorldManager {
         // `GetWorldManager().SpawnBattleNpcById(...)` — not `:`.
         methods.add_function(
             "SpawnBattleNpcById",
-            |lua, (id, content_area): (u32, mlua::AnyUserData)| {
-                let (parent_zone_id, area_name, queue) = {
+            |lua,
+             (id, content_area, appearance_class_id, display_name): (
+                u32,
+                mlua::AnyUserData,
+                Option<u32>,
+                Option<String>,
+            )| {
+                let (parent_zone_id, area_name, queue, instance_id, slot) = {
                     let area = content_area.borrow::<LuaContentArea>()?;
                     (
                         area.parent_zone_id,
                         area.area_name.clone(),
                         area.queue.clone(),
+                        area.instance_id,
+                        area.slot,
                     )
                 };
                 // Standard NPC actor-id formula. Using `0x40000 | id`
@@ -4140,7 +4329,15 @@ impl UserData for LuaWorldManager {
                 // the per-zone actor-number space (sequential
                 // allocations start at 1) — collision-free for any
                 // realistic zone.
-                let actor_number = 0x40000u32 | (id & 0x3FFFF);
+                // The copy's slot sits above the battle npc id, so two copies
+                // of one content never share an actor id.
+                if id > crate::content_instance::MAX_CONTENT_BNPC_ID {
+                    tracing::warn!(
+                        bnpc_id = id,
+                        "SpawnBattleNpcById: content bnpc ids must fit in 12 bits"
+                    );
+                }
+                let actor_number = crate::content_instance::bnpc_actor_number(slot, id);
                 let expected_actor_id =
                     (4u32 << 28) | (parent_zone_id << 19) | (actor_number & 0x7FFFF);
                 push(
@@ -4149,6 +4346,9 @@ impl UserData for LuaWorldManager {
                         bnpc_id: id,
                         parent_zone_id,
                         expected_actor_id,
+                        appearance_class_id: appearance_class_id.filter(|&c| c != 0),
+                        display_name: display_name.filter(|n| !n.is_empty()),
+                        instance_id,
                     },
                 );
                 tracing::debug!(
@@ -4198,14 +4398,29 @@ impl UserData for LuaWorldManager {
         // dispatching to the right handler.
         // (DoPlayerMoveInZone is now properly bound below as a typed
         // WarpToPosition dispatch — the same-zone teleport works.)
-        for stub in [
+        // PartyInviteCommand: a name typed in, or the targeted actor's id.
+        methods.add_method(
             "CreateInvitePartyGroup",
+            |_, this, (player, target): (mlua::AnyUserData, mlua::Value)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                if let Some(target) = party_target(&target) {
+                    push(
+                        &this.queue,
+                        LuaCommand::PartyInvite {
+                            player_id: p.snapshot.actor_id,
+                            target,
+                        },
+                    );
+                }
+                Ok(())
+            },
+        );
+        for stub in [
             "CreateTradeGroup",
             "AcceptTrade",
             "CancelTrade",
             "CompleteTrade",
             "RefuseTrade",
-            "GroupInviteResult",
             "ReloadZone",
             "AddToBazaar",
             "RemoveFromBazaar",
@@ -4226,26 +4441,154 @@ impl UserData for LuaWorldManager {
         // linkshell UI scripts. Stubs for now; real impl needs
         // round-tripping through the world-server (linkshell metadata
         // lives there, not on map-server).
-        for stub in [
+        // The linkshell NPC (crate::linkshells): create, change the crest,
+        // disband.
+        methods.add_method(
             "RequestWorldLinkshellCreate",
-            "RequestWorldLinkshellInviteMember",
-            "RequestWorldLinkshellCancelInvite",
-            "RequestWorldLinkshellKick",
-            "RequestWorldLinkshellLeave",
-            "RequestWorldLinkshellChangeActive",
-            "RequestWorldLinkshellRankChange",
-        ] {
-            let name: &'static str = stub;
-            methods.add_method(name, move |_, this, _: mlua::MultiValue| {
+            |_, this, (player, name, crest): (mlua::AnyUserData, String, u16)| {
+                let p = player.borrow::<LuaPlayer>()?;
                 push(
                     &this.queue,
-                    LuaCommand::LogError(format!(
-                        "WorldManager:{name} (stub — needs world-server round-trip)"
-                    )),
+                    LuaCommand::LinkshellCreate {
+                        player_id: p.snapshot.actor_id,
+                        name,
+                        crest,
+                    },
                 );
                 Ok(())
-            });
-        }
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellCrestModify",
+            |_, this, (player, name, crest): (mlua::AnyUserData, String, u16)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellCrestModify {
+                        player_id: p.snapshot.actor_id,
+                        name,
+                        crest,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellDelete",
+            |_, this, (player, name): (mlua::AnyUserData, String)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellDelete {
+                        player_id: p.snapshot.actor_id,
+                        name,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellInviteMember",
+            |_, this, (player, name, invitee): (mlua::AnyUserData, String, u32)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellInvite {
+                        player_id: p.snapshot.actor_id,
+                        name,
+                        invitee,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellCancelInvite",
+            |_, this, player: mlua::AnyUserData| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellInviteCancel {
+                        player_id: p.snapshot.actor_id,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellLeave",
+            |_, this, (player, name): (mlua::AnyUserData, String)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellLeave {
+                        player_id: p.snapshot.actor_id,
+                        name,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellKick",
+            |_, this, (player, name, kicked): (mlua::AnyUserData, String, String)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellKick {
+                        player_id: p.snapshot.actor_id,
+                        name,
+                        kicked,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellChangeActive",
+            |_, this, (player, name): (mlua::AnyUserData, Option<String>)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellChangeActive {
+                        player_id: p.snapshot.actor_id,
+                        name: name.unwrap_or_default(),
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "RequestWorldLinkshellRankChange",
+            |_, this, (player, name, member, rank): (mlua::AnyUserData, String, String, u8)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::LinkshellRankChange {
+                        player_id: p.snapshot.actor_id,
+                        name,
+                        member,
+                        rank,
+                    },
+                );
+                Ok(())
+            },
+        );
+        methods.add_method(
+            "GroupInviteResult",
+            |_, this, (player, group_type, result): (mlua::AnyUserData, u32, u32)| {
+                let p = player.borrow::<LuaPlayer>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::GroupInviteResult {
+                        player_id: p.snapshot.actor_id,
+                        group_type,
+                        result,
+                    },
+                );
+                Ok(())
+            },
+        );
 
         // Warp methods. `WarpToPosition` is fully wired (same-zone
         // teleport — emits a SetActorPosition packet so the client
@@ -5054,7 +5397,16 @@ pub struct LuaQuestHandle {
 
 impl UserData for LuaQuestHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("GetQuestId", |_, this, _: ()| Ok(this.quest_id));
+        // `quest.GetQuestId()` too (dot, no self), as Meteor's runtime took it.
+        methods.add_meta_method(mlua::MetaMethod::Index, |lua, this, key: String| {
+            if key == "GetQuestId" {
+                let id = this.quest_id;
+                return lua
+                    .create_function(move |_, _: mlua::Variadic<Value>| Ok(id))
+                    .map(Value::Function);
+            }
+            Ok(Value::Nil)
+        });
         // `quest:getQuestId()` lowercase alias — same MoonSharp
         // case-insensitivity story as `getSequence` below. 4 sites.
         methods.add_method("getQuestId", |_, this, _: ()| Ok(this.quest_id));
@@ -6065,5 +6417,15 @@ impl UserData for LuaRegionalLeveResolver {
                 Ok(tbl)
             },
         );
+    }
+}
+
+/// A party command's target: a name, or an actor id from the target menu.
+fn party_target(v: &mlua::Value) -> Option<String> {
+    match v {
+        mlua::Value::String(s) => s.to_str().ok().map(|s| s.to_string()),
+        mlua::Value::Integer(i) => Some(i.to_string()),
+        mlua::Value::Number(n) => Some((*n as i64).to_string()),
+        _ => None,
     }
 }

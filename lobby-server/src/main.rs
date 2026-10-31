@@ -48,8 +48,8 @@ async fn main() -> Result<()> {
     let args = LaunchArgs::parse();
     let smoke = args.smoke;
     let _no_console = args.no_console; // no interactive console here; accepted for CLI parity
-    tracing::debug!(config_path = %args.config, "loading config");
-    let mut config = match Config::load(&args.config) {
+    tracing::debug!(config_override = ?args.config, "loading settings");
+    let mut config = match Config::load(args.config.as_deref()) {
         Ok(cfg) => cfg,
         Err(e) => {
             if smoke {
@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
     let server_list = match common::server_list::ServerList::load(config.servers_path()) {
         Ok(list) => {
             tracing::info!(
-                path = %config.servers_path().display(),
+                path = ?config.servers_path(),
                 worlds = list.servers.len(),
                 "server list loaded"
             );

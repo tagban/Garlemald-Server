@@ -63,6 +63,12 @@ impl battle_utils::Rng for ThreadRng {
 // Status events
 // ---------------------------------------------------------------------------
 
+/// pmeteor `HitEffect.StatusEffectType`: marks a CommandResult's effect
+/// field as a status effect id.
+const STATUS_EFFECT_HIT: u32 = 1 << 29;
+/// "You are <status>." — status gain text with no command behind it.
+const COMMANDLESS_GAIN_TEXT_ID: u16 = 30330;
+
 pub async fn dispatch_status_event(
     event: &StatusEvent,
     registry: &ActorRegistry,
@@ -99,9 +105,15 @@ pub async fn dispatch_status_event(
             slot_index,
             status_id,
         } => {
-            // Emit a SetActorStatusPacket to every client around the owner.
-            let sub = tx::build_set_actor_status(*owner_actor_id, *slot_index, *status_id);
-            broadcast_to_neighbours(world, registry, *owner_actor_id, sub.to_bytes()).await;
+            // Emit a SetActorStatusPacket to the owner and every client
+            // around them (pmeteor `BroadcastPacketsAroundActor`). The owner
+            // needs it too: the statusShownTime write below lands in their
+            // own status row, and a countdown on an empty slot crashes the
+            // client looking up status 0.
+            let bytes =
+                tx::build_set_actor_status(*owner_actor_id, *slot_index, *status_id).to_bytes();
+            send_to_self_if_player(registry, world, *owner_actor_id, bytes.clone()).await;
+            broadcast_to_neighbours(world, registry, *owner_actor_id, bytes).await;
         }
         StatusEvent::PacketSetStatusTime {
             owner_actor_id,
@@ -178,24 +190,35 @@ pub async fn dispatch_status_event(
             status_effect_id,
             play_gain_animation,
         } => {
-            // "You gain/lose the effect of X." pmeteor packs this into a
-            // CommandResult (owner.Id, textId, effectId | HitEffect flag) on
-            // the battle-action container; we render the same text sheet via
-            // the game-message builder with the effect id as a LuaParam. The
-            // header source must be the always-present WorldMaster static
-            // actor (the client dispatches game messages by header source —
-            // routing through the player is the #28 crash path), and the text
-            // owner is the WorldMaster system sheet.
-            let params = [common::luaparam::LuaParam::UInt32(*status_effect_id)];
-            let sub = tx::build_game_message_actor1_with_params(
-                tx::WORLD_MASTER_ACTOR_ID,
+            // "You gain/lose the effect of X." The text reads the status from
+            // a CommandResult's effect field (`[@SHEET(xtx/status,$E8(11),3)]`),
+            // so it has to ride a 0x0139 CommandResultX01 with the effect id
+            // flagged as a status (retail invigorate: text 30328, effect
+            // 0x20036776). As a plain game message with the id as a LuaParam
+            // the client finds no effect field and crashes.
+            //
+            // There's no command here, so the default gain text 30328 ("Your
+            // <command> grants you the effect of X.") becomes 30330 ("You are
+            // X."), the commandless one.
+            let text_id = if *text_id == crate::status::DEFAULT_GAIN_TEXT_ID {
+                COMMANDLESS_GAIN_TEXT_ID
+            } else {
+                *text_id
+            };
+            let result = crate::packets::send::actor_battle::CommandResult {
+                target_id: *owner_actor_id,
+                worldmaster_text_id: text_id,
+                hit_effect: STATUS_EFFECT_HIT | *status_effect_id,
+                hit_num: 1,
+                ..Default::default()
+            };
+            let bytes = crate::packets::send::actor_battle::build_command_result_x01(
                 *owner_actor_id,
-                tx::WORLD_MASTER_ACTOR_ID,
-                *text_id,
-                tx::MESSAGE_TYPE_SYSTEM,
-                &params,
-            );
-            let bytes = sub.to_bytes();
+                0,
+                0,
+                &result,
+            )
+            .to_bytes();
             // The owner always sees the log line; neighbours only receive the
             // packet when the gain/lose animation should splash on nearby
             // clients (pmeteor's `playEffect` / `HitEffect.StatusEffectType`).
@@ -1610,8 +1633,21 @@ pub(crate) async fn spawn_bundle_fanout(
     let packets = [
         tx::actor::build_add_actor(actor_id, 0).to_bytes(),
         tx::actor::build_set_actor_speed_default(actor_id).to_bytes(),
+        // Target = the actor's own id and spawn type 0 (FADEIN), as for every
+        // NPC (`send_zone_in_bundle`, Meteor `Npc.GetSpawnPackets`). The -1
+        // target is the receiving player's OWN avatar, and type 1
+        // (PLAYERWAKE) the own-avatar warp-in; neither belongs on someone
+        // else's spawn, which every nearby player got whenever another
+        // player zoned in or warped close by.
         tx::actor::build_set_actor_position(
-            actor_id, -1, position.x, position.y, position.z, rotation, 1, false,
+            actor_id,
+            actor_id as i32,
+            position.x,
+            position.y,
+            position.z,
+            rotation,
+            0,
+            false,
         )
         .to_bytes(),
         tx::actor::build_set_actor_appearance(actor_id, model_id, &appearance_ids).to_bytes(),
@@ -1619,7 +1655,7 @@ pub(crate) async fn spawn_bundle_fanout(
         tx::actor::build_set_actor_state(actor_id, state, 0).to_bytes(),
         tx::actor::build_set_actor_sub_state(actor_id, 0, 0, 0, 0, 0, 0).to_bytes(),
         tx::actor::build_set_actor_status_all(actor_id, &[0u16; 20]).to_bytes(),
-        tx::actor::build_set_actor_icon(actor_id, 0).to_bytes(),
+        tx::actor::build_set_actor_icon(actor_id, crate::gm_tags::icon(actor_id)).to_bytes(),
         tx::actor::build_set_actor_is_zoning(actor_id, false).to_bytes(),
     ];
     for bytes in packets {
@@ -1650,7 +1686,7 @@ pub(crate) async fn broadcast_to_neighbours(
 // at full HP / empty TP returns `false` so idle-at-rest actors produce
 // zero wire traffic from the regen tick.
 
-async fn apply_hp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> bool {
+pub(crate) async fn apply_hp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> bool {
     let Some(handle) = registry.get(actor_id).await else {
         return false;
     };
@@ -1660,7 +1696,7 @@ async fn apply_hp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> 
     c.chara.hp != before
 }
 
-async fn apply_mp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> bool {
+pub(crate) async fn apply_mp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> bool {
     let Some(handle) = registry.get(actor_id).await else {
         return false;
     };
@@ -1670,7 +1706,7 @@ async fn apply_mp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> 
     c.chara.mp != before
 }
 
-async fn apply_tp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> bool {
+pub(crate) async fn apply_tp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> bool {
     let Some(handle) = registry.get(actor_id).await else {
         return false;
     };
@@ -1685,7 +1721,11 @@ async fn apply_tp_delta(registry: &ActorRegistry, actor_id: u32, delta: i32) -> 
 /// pool broadcast fired. Resolve the owner's zone and ride the same
 /// `charaWork/stateAtQuicklyForAll` bundle the battle resolve fns use
 /// (pmeteor `Character.PostUpdate`'s HpTpMp update flag).
-async fn sync_pools_after_tick(registry: &ActorRegistry, world: &WorldManager, actor_id: u32) {
+pub(crate) async fn sync_pools_after_tick(
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    actor_id: u32,
+) {
     let Some(handle) = registry.get(actor_id).await else {
         return;
     };
@@ -1788,6 +1828,7 @@ async fn apply_recalc_stats(
                 c.apply_player_weapon_damage_power(&items, &equipped);
             }
             c.apply_player_stat_derivation();
+            c.apply_food_bonuses();
         }
         c.recalculate_stats();
         let post = if is_player {
@@ -1980,6 +2021,16 @@ pub(crate) async fn die_if_defender_fell(
     if !is_bnpc {
         return;
     }
+    // A battle leve's target counts whoever landed the blow.
+    crate::leve::battle::on_death(
+        defender_actor_id,
+        registry,
+        world,
+        db.map(|d| d.as_ref()),
+        lua,
+        crate::runtime::clock::server_now_ms(),
+    )
+    .await;
     // #28 S4.1 — the content-area kill gate fires from `apply_die`'s tail
     // (which this function just called with the same lua/db pair), so it
     // already covered this death — including ally killing blows, whose
@@ -2158,6 +2209,37 @@ pub(crate) async fn check_content_battle_complete(
             director = format!("0x{:08X}", active.director_actor_id),
             "content battle complete — firing battleComplete through the event bridge",
         );
+        // The DoW combat tutorials wait on in-fight milestones (a swing,
+        // TP 1000, a weaponskill) before battleComplete. Yda and Papalymo
+        // can finish the wolves first; battleComplete then found nothing
+        // waiting and the tutorial hung on "use a weaponskill" with no
+        // enemies left. Release any milestone still being waited on, in
+        // order, so the director runs through to its battleComplete wait.
+        for milestone in ["playerAttack", "tpOver1000", "weaponskillUsed"] {
+            let waiting = lua
+                .scheduler()
+                .lock()
+                .is_ok_and(|s| s.has_signal_waiter(milestone));
+            if !waiting {
+                continue;
+            }
+            tracing::info!(
+                session = session.id,
+                milestone,
+                "content battle complete — releasing a pending fight milestone",
+            );
+            crate::runtime::quest_apply::apply_event_script_commands(
+                &player,
+                vec![crate::lua::command::LuaCommand::SendSignal {
+                    name: milestone.into(),
+                }],
+                registry,
+                db,
+                world,
+                Some(lua),
+            )
+            .await;
+        }
         crate::runtime::quest_apply::apply_event_script_commands(
             &player,
             vec![crate::lua::command::LuaCommand::SendSignal {
@@ -3314,7 +3396,7 @@ mod battle_exp_award_tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("garlemald-exp-award-{nanos}-{seq}.db"))
+        common::test_tmp::dir().join(format!("garlemald-exp-award-{nanos}-{seq}.db"))
     }
 
     fn make_zone(zone_id: u32) -> Zone {
@@ -3561,6 +3643,8 @@ mod battle_exp_award_tests {
             content_script: script.into(),
             warp_complete: true,
             spawned_actor_ids: Vec::new(),
+            instance_id: 0,
+            party_member: false,
         });
         session
     }
@@ -3643,7 +3727,7 @@ mod pool_tick_sync_tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("garlemald-pool-tick-{nanos}-{seq}.db"))
+        common::test_tmp::dir().join(format!("garlemald-pool-tick-{nanos}-{seq}.db"))
     }
 
     /// Zone 100 with one Player (session + client channel attached),

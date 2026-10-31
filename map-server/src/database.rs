@@ -43,6 +43,19 @@ use crate::gamedata::{
     StatusEffectDef, StatusEffectEntry, TIMER_COLUMNS, class_column,
 };
 
+/// A consumable's use data, from [`Database::usable_item`].
+#[derive(Debug, Clone, Default)]
+pub struct UsableItem {
+    /// `Normal/PotionItem`, `Normal/FoodItem`, `Normal/EnchantMedicineItem`, ...
+    pub category: String,
+    pub usable: bool,
+    pub recast_s: f32,
+    pub recast_group: i32,
+    pub duration_s: f32,
+    /// (paramBonus type, value, cap; 0 = no cap)
+    pub effects: Vec<(u32, i32, i32)>,
+}
+
 /// One row of `server_zones` — the on-disk record for a zone template.
 #[derive(Debug, Clone, Default)]
 pub struct ZoneRow {
@@ -229,6 +242,23 @@ pub struct PrivateAreaRow {
     pub bgm_battle: u16,
 }
 
+/// A player's bug report (modules/bugreport), as `!bug` files it.
+#[derive(Debug, Clone, Default)]
+pub struct BugReport {
+    pub user_id: i64,
+    pub character_id: u32,
+    pub character_name: String,
+    pub world: String,
+    pub zone_id: u32,
+    pub zone_name: String,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub rotation: f32,
+    pub message: String,
+    pub created_at: i64,
+}
+
 pub struct Database {
     conn: Connection,
 }
@@ -401,6 +431,64 @@ impl Database {
             })
             .await?;
         Ok(row)
+    }
+
+    /// Where an aetheryte (a leve camp) stands: zone and position of its
+    /// `server_spawn_locations` row.
+    pub async fn aetheryte_spot(
+        &self,
+        actor_class_id: u32,
+    ) -> Result<Option<(u32, f32, f32, f32)>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    r"SELECT zoneId, positionX, positionY, positionZ
+                      FROM server_spawn_locations WHERE actorClassId = ?1 AND zoneId != 0
+                      LIMIT 1",
+                    [actor_class_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()
+            })
+            .await
+            .context("leve data query")
+    }
+
+    /// Every monster spawn point in a zone (positions on the ground).
+    pub async fn battlenpc_spawn_points(&self, zone_id: u32) -> Result<Vec<(f32, f32, f32)>> {
+        self.conn
+            .call_db(move |c| {
+                let mut stmt = c.prepare(
+                    r"SELECT s.positionX, s.positionY, s.positionZ
+                      FROM server_battlenpc_spawn_locations s
+                      JOIN server_battlenpc_groups g ON g.groupId = s.groupId
+                      WHERE g.zoneId = ?1",
+                )?;
+                let rows = stmt
+                    .query_map([zone_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            })
+            .await
+            .context("leve data query")
+    }
+
+    /// The monster class that wears a display name: its id is usually the
+    /// name id minus 1,000,000, and it must have a monster class path.
+    pub async fn monster_class_for_name(&self, display_name_id: u32) -> Result<Option<u32>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    r"SELECT id FROM gamedata_actor_class
+                      WHERE displayNameId = ?1 AND classPath LIKE '/Chara/Npc/Monster/%'
+                      ORDER BY id != ?1 - 1000000, id LIMIT 1",
+                    [display_name_id],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
+            .context("leve data query")
     }
 
     pub async fn load_actor_classes(&self) -> Result<HashMap<u32, crate::npc::ActorClass>> {
@@ -625,6 +713,30 @@ impl Database {
                         })
                     })?
                     .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            })
+            .await?;
+        Ok(rows)
+    }
+
+    /// Every battle NPC that spawns with its zone (`spawnType = 0`, not in a
+    /// private area) - the open-world monsters - as `(bnpcId, zoneId)`,
+    /// ordered so actor numbers come out the same on every boot.
+    pub async fn list_zone_load_battle_npcs(&self) -> Result<Vec<(u32, u32)>> {
+        let rows = self
+            .conn
+            .call_db(|c| {
+                let mut stmt = c.prepare(
+                    r"SELECT bsl.bnpcId, bgr.zoneId
+                      FROM server_battlenpc_spawn_locations bsl
+                      INNER JOIN server_battlenpc_groups bgr ON bsl.groupId = bgr.groupId
+                      WHERE bgr.spawnType = 0
+                        AND (bgr.privateAreaName IS NULL OR bgr.privateAreaName = '')
+                      ORDER BY bgr.zoneId, bsl.bnpcId",
+                )?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, u32>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok(rows)
             })
             .await?;
@@ -975,7 +1087,10 @@ impl Database {
             .conn
             .call_db(|c| {
                 let mut stmt = c.prepare(
-                    r"SELECT id, zoneId, name, difficulty, leveType, rewardExp, rewardGil
+                    r"SELECT id, zoneId, name, difficulty, leveType, rewardExp, rewardGil,
+                             classType, location, level, aetheryte, plateId, borderId,
+                             timeLimit, favorCount, aimNum1, aimNum2, aimNum3, aimNum4,
+                             mob1, mob2, mob3, mob4
                       FROM gamedata_guildleves",
                 )?;
                 let rows: Vec<(u32, GuildleveGamedata)> = stmt
@@ -991,6 +1106,20 @@ impl Database {
                                 leve_type: r.get::<_, u8>(4).unwrap_or_default(),
                                 reward_exp: r.get::<_, u32>(5).unwrap_or_default(),
                                 reward_gil: r.get::<_, u32>(6).unwrap_or_default(),
+                                class_type: r.get::<_, u8>(7).unwrap_or_default(),
+                                location: r.get::<_, u8>(8).unwrap_or_default(),
+                                level: r.get::<_, u16>(9).unwrap_or_default(),
+                                aetheryte: r.get::<_, u32>(10).unwrap_or_default(),
+                                plate_id: r.get::<_, u32>(11).unwrap_or_default(),
+                                border_id: r.get::<_, u32>(12).unwrap_or_default(),
+                                time_limit: r.get::<_, u32>(13).unwrap_or_default(),
+                                favor_count: r.get::<_, u32>(14).unwrap_or_default(),
+                                aim_num: std::array::from_fn(|i| {
+                                    r.get::<_, i8>(15 + i).unwrap_or_default()
+                                }),
+                                mobs: std::array::from_fn(|i| {
+                                    r.get::<_, u32>(19 + i).unwrap_or_default()
+                                }),
                             },
                         ))
                     })?
@@ -2855,6 +2984,15 @@ impl Database {
         let effective_class: u8 = if is_undergarment { 0 } else { class_id };
         self.conn
             .call_db(move |c| {
+                // Older builds stored some gear (legs) under class 0 by a
+                // wrong slot number; drop that row so it can't shadow this one.
+                if !is_undergarment {
+                    c.execute(
+                        r"DELETE FROM characters_inventory_equipment
+                          WHERE characterId = :cid AND classId = 0 AND equipSlot = :slot",
+                        named_params! { ":cid": chara_id, ":slot": equip_slot },
+                    )?;
+                }
                 c.execute(
                     r"INSERT INTO characters_inventory_equipment (characterId, classId, equipSlot, itemId)
                       VALUES (:cid, :class, :slot, :iid)
@@ -2876,8 +3014,9 @@ impl Database {
         self.conn
             .call_db(move |c| {
                 c.execute(
+                    // class 0 too: see `equip_item`
                     r"DELETE FROM characters_inventory_equipment
-                      WHERE characterId = :cid AND classId = :class AND equipSlot = :slot",
+                      WHERE characterId = :cid AND (classId = :class OR classId = 0) AND equipSlot = :slot",
                     named_params! {
                         ":cid": chara_id,
                         ":class": class_id,
@@ -2888,6 +3027,310 @@ impl Database {
             })
             .await?;
         Ok(())
+    }
+
+    /// What using `catalog_id` does: the gamedata row's category, recast and
+    /// duration, plus its bonuses. Consumables keep them in
+    /// `gamedata_items_equipment`: slot 3 is food's EXP bonus, slots 5-7 the
+    /// effects (`1015xxx` a percent stat buff, `1016xxx` a percent HP/MP
+    /// restore) and slots 8-10 each effect's cap (0 = none).
+    pub async fn usable_item(&self, catalog_id: u32) -> Result<Option<UsableItem>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT i.category, i.isUseable, i.recastTime, i.recastGroup, i.effectDuration,
+                            e.paramBonusType3, e.paramBonusValue3,
+                            e.paramBonusType5, e.paramBonusValue5,
+                            e.paramBonusType6, e.paramBonusValue6,
+                            e.paramBonusType7, e.paramBonusValue7,
+                            e.paramBonusValue8, e.paramBonusValue9, e.paramBonusValue10
+                     FROM gamedata_items i
+                     LEFT JOIN gamedata_items_equipment e ON e.catalogID = i.catalogID
+                     WHERE i.catalogID = ?1",
+                    [catalog_id],
+                    |r| {
+                        let int = |k: usize| -> rusqlite::Result<i32> {
+                            Ok(r.get::<_, Option<i32>>(k)?.unwrap_or(-1))
+                        };
+                        let mut effects = Vec::new();
+                        for k in 0..3 {
+                            let (kind, value, cap) =
+                                (int(7 + 2 * k)?, int(8 + 2 * k)?, int(13 + k)?);
+                            if kind > 0 && value != 0 {
+                                effects.push((kind as u32, value, cap.max(0)));
+                            }
+                        }
+                        let (exp_kind, exp_value) = (int(5)?, int(6)?);
+                        if exp_kind > 0 && exp_value != 0 {
+                            effects.push((exp_kind as u32, exp_value, 0));
+                        }
+                        Ok(UsableItem {
+                            category: r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                            usable: r.get::<_, Option<i32>>(1)?.unwrap_or(0) != 0,
+                            recast_s: r.get::<_, Option<f64>>(2)?.unwrap_or(0.0) as f32,
+                            recast_group: r.get::<_, Option<i32>>(3)?.unwrap_or(0),
+                            duration_s: r.get::<_, Option<f64>>(4)?.unwrap_or(0.0) as f32,
+                            effects,
+                        })
+                    },
+                )
+                .optional()
+            })
+            .await
+    }
+
+    /// GM `!spawn`: temporary pool / group / spawn rows for `class_id` at
+    /// `positions`, so the normal battle-NPC spawn path can materialise it.
+    /// Returns (bnpc ids, group id, pool id if one was created here); remove
+    /// them again with [`Database::gm_spawn_delete`] once spawned.
+    pub async fn gm_spawn_insert(
+        &self,
+        class_id: u32,
+        name: String,
+        genus_id: u32,
+        zone_id: u32,
+        level: u32,
+        positions: Vec<(f32, f32, f32, f32)>,
+    ) -> Result<(Vec<u32>, u32, Option<u32>)> {
+        self.conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                let existing: Option<u32> = tx
+                    .query_row(
+                        "SELECT poolId FROM server_battlenpc_pools WHERE actorClassId = ?1 LIMIT 1",
+                        [class_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let (pool_id, created) = match existing {
+                    Some(p) => (p, None),
+                    None => {
+                        let p: u32 = tx.query_row(
+                            "SELECT COALESCE(MAX(poolId), 0) + 1 FROM server_battlenpc_pools",
+                            [],
+                            |r| r.get(0),
+                        )?;
+                        tx.execute(
+                            "INSERT INTO server_battlenpc_pools (poolId, actorClassId, name, genusId, combatSkill, combatDelay)
+                             VALUES (?1, ?2, ?3, ?4, 1, 4200)",
+                            rusqlite::params![p, class_id, name, genus_id],
+                        )?;
+                        (p, Some(p))
+                    }
+                };
+                let group_id: u32 = tx.query_row(
+                    "SELECT COALESCE(MAX(groupId), 0) + 1 FROM server_battlenpc_groups",
+                    [],
+                    |r| r.get(0),
+                )?;
+                tx.execute(
+                    "INSERT INTO server_battlenpc_groups (groupId, poolId, scriptName, minLevel, maxLevel, respawnTime, zoneId)
+                     VALUES (?1, ?2, 'gm_spawn', ?3, ?3, 0, ?4)",
+                    rusqlite::params![group_id, pool_id, level, zone_id],
+                )?;
+                let mut ids = Vec::new();
+                for (x, y, z, rot) in positions {
+                    tx.execute(
+                        "INSERT INTO server_battlenpc_spawn_locations (groupId, positionX, positionY, positionZ, rotation)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![group_id, x, y, z, rot],
+                    )?;
+                    ids.push(tx.last_insert_rowid() as u32);
+                }
+                tx.commit()?;
+                Ok((ids, group_id, created))
+            })
+            .await
+    }
+
+    /// Remove the rows [`Database::gm_spawn_insert`] made.
+    pub async fn gm_spawn_delete(
+        &self,
+        bnpc_ids: Vec<u32>,
+        group_id: u32,
+        pool_id: Option<u32>,
+    ) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                for id in bnpc_ids {
+                    c.execute(
+                        "DELETE FROM server_battlenpc_spawn_locations WHERE bnpcId = ?1",
+                        [id],
+                    )?;
+                }
+                c.execute(
+                    "DELETE FROM server_battlenpc_groups WHERE groupId = ?1",
+                    [group_id],
+                )?;
+                if let Some(p) = pool_id {
+                    c.execute("DELETE FROM server_battlenpc_pools WHERE poolId = ?1", [p])?;
+                }
+                Ok(())
+            })
+            .await
+    }
+
+    /// The genus other pools of `class_id`'s monster family use. Monster
+    /// class ids read 2 / kind / family (3 digits) / variant (2 digits), so
+    /// 2101407 and 2201406 are both wolves.
+    pub async fn genus_for_class_family(&self, class_id: u32) -> Result<Option<u32>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT genusId FROM server_battlenpc_pools
+                     WHERE (actorClassId / 100) % 1000 = (?1 / 100) % 1000
+                     GROUP BY genusId ORDER BY COUNT(*) DESC LIMIT 1",
+                    [class_id],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
+    }
+
+    /// The genus (monster family) a class path's folder names, e.g.
+    /// `/Chara/Npc/Monster/Wolf/WolfStandard` -> the "Wolf" genus.
+    pub async fn genus_for_family(&self, family: String) -> Result<Option<u32>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT genusId FROM server_battlenpc_genus WHERE lower(name) = lower(?1) LIMIT 1",
+                    [family],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
+    }
+
+    /// The item in gear slot `equip_slot` for `class_id` (undergarments are
+    /// stored under class 0): `(serverItemId, catalogId, quality)`.
+    pub async fn equipped_item(
+        &self,
+        chara_id: u32,
+        class_id: u8,
+        equip_slot: u16,
+    ) -> Result<Option<(u64, u32, u8)>> {
+        self.conn
+            .call_db(move |c| {
+                let row = c
+                    .query_row(
+                        r"SELECT si.id, si.itemId, si.quality
+                          FROM characters_inventory_equipment cie
+                          JOIN server_items si ON si.id = cie.itemId
+                          WHERE cie.characterId = :cid AND cie.equipSlot = :slot
+                            AND (cie.classId = :class OR cie.classId = 0)",
+                        named_params! { ":cid": chara_id, ":slot": equip_slot, ":class": class_id },
+                        |r| {
+                            Ok((
+                                r.get::<_, i64>(0)? as u64,
+                                r.get::<_, u32>(1)?,
+                                r.get::<_, i64>(2).unwrap_or(0) as u8,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                Ok(row)
+            })
+            .await
+    }
+
+    /// Equipped gear as `(equipSlot, bag slot, bag package)`: what the
+    /// client's equipment package links to (Meteor `ReferencedItemPackage`).
+    pub async fn equipment_links(
+        &self,
+        chara_id: u32,
+        class_id: u8,
+    ) -> Result<Vec<(u16, u16, u16)>> {
+        self.conn
+            .call_db(move |c| {
+                let mut stmt = c.prepare(
+                    r"SELECT cie.equipSlot, ci.slot, ci.itemPackage
+                      FROM characters_inventory_equipment cie
+                      JOIN characters_inventory ci
+                        ON ci.characterId = cie.characterId AND ci.serverItemId = cie.itemId
+                      WHERE cie.characterId = :cid AND (cie.classId = :class OR cie.classId = 0)
+                      ORDER BY cie.equipSlot",
+                )?;
+                let rows = stmt
+                    .query_map(
+                        named_params! { ":cid": chara_id, ":class": class_id },
+                        |r| {
+                            Ok((
+                                r.get::<_, u16>(0)?,
+                                r.get::<_, u16>(1)?,
+                                r.get::<_, u16>(2)?,
+                            ))
+                        },
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    /// `gamedata_items_graphics` for a catalog id: `(weaponId, equipmentId,
+    /// variantId, colorId)`.
+    pub async fn item_graphics(&self, catalog_id: u32) -> Result<Option<(u32, u32, u32, u32)>> {
+        self.conn
+            .call_db(move |c| {
+                let row = c
+                    .query_row(
+                        r"SELECT weaponId, equipmentId, variantId, colorId
+                          FROM gamedata_items_graphics WHERE catalogID = :id",
+                        named_params! { ":id": catalog_id },
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    )
+                    .optional()?;
+                Ok(row)
+            })
+            .await
+    }
+
+    /// Save one gear graphic to `characters_appearance` (Meteor
+    /// `SavePlayerAppearance`). `column` comes from a fixed list, never input.
+    pub async fn save_appearance_slot(
+        &self,
+        chara_id: u32,
+        column: &'static str,
+        value: u32,
+    ) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    &format!(
+                        "UPDATE characters_appearance SET {column} = :v WHERE characterId = :cid"
+                    ),
+                    named_params! { ":v": value, ":cid": chara_id },
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Give class `to` the gear class `from` is wearing (all but the
+    /// weapons), when `to` has none of its own yet. A first switch to a
+    /// class then keeps the outfit instead of stripping it.
+    pub async fn copy_class_equipment(&self, chara_id: u32, from: u8, to: u8) -> Result<usize> {
+        self.conn
+            .call_db(move |c| {
+                let has: i64 = c.query_row(
+                    "SELECT COUNT(*) FROM characters_inventory_equipment WHERE characterId = :cid AND classId = :to",
+                    named_params! { ":cid": chara_id, ":to": to },
+                    |r| r.get(0),
+                )?;
+                if has > 0 || from == to {
+                    return Ok(0);
+                }
+                let n = c.execute(
+                    r"INSERT INTO characters_inventory_equipment (characterId, classId, equipSlot, itemId)
+                      SELECT characterId, :to, equipSlot, itemId FROM characters_inventory_equipment
+                      WHERE characterId = :cid AND classId = :from AND equipSlot > 1",
+                    named_params! { ":cid": chara_id, ":from": from, ":to": to },
+                )?;
+                Ok(n)
+            })
+            .await
     }
 
     pub async fn equip_ability(
@@ -3413,25 +3856,269 @@ impl Database {
     // Linkshells, support tickets, FAQ, chocobo, status save
     // =======================================================================
 
+    /// Create a linkshell with `master` as its master member (rank 0xA):
+    /// Ok(None) if the name is taken. The crest goes to `crestIcon`, the
+    /// column the world server reads (and `crest`, which some old copies of
+    /// the schema use).
     pub async fn create_linkshell(
         &self,
-        chara_id: u32,
-        ls_name: &str,
-        ls_crest: u16,
+        master: u32,
+        name: &str,
+        crest: u16,
+    ) -> Result<Option<u64>> {
+        let name = name.to_owned();
+        self.conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                let taken: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM server_linkshells WHERE name = :n COLLATE NOCASE)",
+                    named_params! { ":n": name },
+                    |r| r.get(0),
+                )?;
+                if taken {
+                    return Ok(None);
+                }
+                let has_crest: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('server_linkshells') WHERE name = 'crest')",
+                    [],
+                    |r| r.get(0),
+                )?;
+                if has_crest {
+                    tx.execute(
+                        "INSERT INTO server_linkshells (name, crestIcon, crest, master, rank) VALUES (:n, :c, :c, :m, 1)",
+                        named_params! { ":n": name, ":c": crest, ":m": master },
+                    )?;
+                } else {
+                    tx.execute(
+                        "INSERT INTO server_linkshells (name, crestIcon, master, rank) VALUES (:n, :c, :m, 1)",
+                        named_params! { ":n": name, ":c": crest, ":m": master },
+                    )?;
+                }
+                let id = tx.last_insert_rowid() as u64;
+                tx.execute(
+                    "INSERT INTO characters_linkshells (characterId, linkshellId, rank) VALUES (:p, :l, 10)",
+                    named_params! { ":p": master, ":l": id as i64 },
+                )?;
+                tx.commit()?;
+                Ok(Some(id))
+            })
+            .await
+    }
+
+    /// (id, name, crest, master, rank) of every linkshell `character_id`
+    /// belongs to.
+    pub async fn linkshells_of_character(
+        &self,
+        character_id: u32,
+    ) -> Result<Vec<(u64, String, u16, u32, u8)>> {
+        self.conn
+            .call_db(move |c| {
+                let mut st = c.prepare(
+                    r"SELECT l.id, l.name, l.crestIcon, l.master, l.rank FROM characters_linkshells cl
+                      JOIN server_linkshells l ON l.id = cl.linkshellId
+                      WHERE cl.characterId = :p ORDER BY l.id",
+                )?;
+                st.query_map(named_params! { ":p": character_id }, |r| {
+                    Ok((
+                        r.get::<_, i64>(0)? as u64,
+                        r.get(1)?,
+                        r.get::<_, i64>(2)? as u16,
+                        r.get::<_, i64>(3)? as u32,
+                        r.get::<_, i64>(4)?.clamp(0, 255) as u8,
+                    ))
+                })?
+                .collect()
+            })
+            .await
+    }
+
+    /// (id, name, crest, master, rank) of the linkshell called `name`.
+    pub async fn linkshell_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<(u64, String, u16, u32, u8)>> {
+        let name = name.to_owned();
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT id, name, crestIcon, master, rank FROM server_linkshells WHERE name = :n COLLATE NOCASE",
+                    named_params! { ":n": name },
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)? as u64,
+                            r.get(1)?,
+                            r.get::<_, i64>(2)? as u16,
+                            r.get::<_, i64>(3)? as u32,
+                            r.get::<_, i64>(4)?.clamp(0, 255) as u8,
+                        ))
+                    },
+                )
+                .optional()
+            })
+            .await
+    }
+
+    /// (id, name, crest, master, rank) of linkshell `id`.
+    pub async fn linkshell_by_id(&self, id: u64) -> Result<Option<(u64, String, u16, u32, u8)>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT id, name, crestIcon, master, rank FROM server_linkshells WHERE id = :l",
+                    named_params! { ":l": id as i64 },
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)? as u64,
+                            r.get(1)?,
+                            r.get::<_, i64>(2)? as u16,
+                            r.get::<_, i64>(3)? as u32,
+                            r.get::<_, i64>(4)?.clamp(0, 255) as u8,
+                        ))
+                    },
+                )
+                .optional()
+            })
+            .await
+    }
+
+    /// (character id, rank, name) of each member of linkshell `id`, the
+    /// master first.
+    pub async fn linkshell_members(&self, id: u64) -> Result<Vec<(u32, u8, String)>> {
+        self.conn
+            .call_db(move |c| {
+                let mut st = c.prepare(
+                    r"SELECT cl.characterId, cl.rank, ch.name FROM characters_linkshells cl
+                      JOIN characters ch ON ch.id = cl.characterId
+                      WHERE cl.linkshellId = :l ORDER BY cl.rank DESC, ch.name",
+                )?;
+                st.query_map(named_params! { ":l": id as i64 }, |r| {
+                    Ok((
+                        r.get::<_, i64>(0)? as u32,
+                        r.get::<_, i64>(1)?.clamp(0, 255) as u8,
+                        r.get(2)?,
+                    ))
+                })?
+                .collect()
+            })
+            .await
+    }
+
+    pub async fn add_linkshell_member(&self, id: u64, character_id: u32, rank: u8) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    "INSERT OR REPLACE INTO characters_linkshells (characterId, linkshellId, rank) VALUES (:p, :l, :r)",
+                    named_params! { ":p": character_id, ":l": id as i64, ":r": rank },
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn remove_linkshell_member(&self, id: u64, character_id: u32) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    "DELETE FROM characters_linkshells WHERE characterId = :p AND linkshellId = :l",
+                    named_params! { ":p": character_id, ":l": id as i64 },
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn set_linkshell_member_rank(
+        &self,
+        id: u64,
+        character_id: u32,
+        rank: u8,
     ) -> Result<bool> {
-        let ls_name = ls_name.to_owned();
-        let ok = self
+        let n = self
             .conn
             .call_db(move |c| {
-                let r = c.execute(
-                    r"INSERT INTO server_linkshells (name, master, crest)
-                      VALUES (:name, :master, :crest)",
-                    named_params! { ":name": ls_name, ":master": chara_id, ":crest": ls_crest },
-                );
-                Ok(r.is_ok())
+                c.execute(
+                    "UPDATE characters_linkshells SET rank = :r WHERE characterId = :p AND linkshellId = :l",
+                    named_params! { ":p": character_id, ":l": id as i64, ":r": rank },
+                )
             })
             .await?;
-        Ok(ok)
+        Ok(n > 0)
+    }
+
+    pub async fn set_linkshell_crest(&self, id: u64, crest: u16) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    "UPDATE server_linkshells SET crestIcon = :c WHERE id = :l",
+                    named_params! { ":c": crest, ":l": id as i64 },
+                )?;
+                let _ = c.execute(
+                    "UPDATE server_linkshells SET crest = :c WHERE id = :l",
+                    named_params! { ":c": crest, ":l": id as i64 },
+                );
+                Ok(())
+            })
+            .await
+    }
+
+    /// Delete linkshell `id` and its memberships; whoever had it active
+    /// has no active linkshell after.
+    pub async fn delete_linkshell(&self, id: u64, name: &str) -> Result<()> {
+        let name = name.to_owned();
+        self.conn
+            .call_db(move |c| {
+                let tx = c.transaction()?;
+                tx.execute("DELETE FROM characters_linkshells WHERE linkshellId = :l", named_params! { ":l": id as i64 })?;
+                tx.execute("DELETE FROM server_linkshells WHERE id = :l", named_params! { ":l": id as i64 })?;
+                tx.execute(
+                    "UPDATE characters SET currentActiveLinkshell = '' WHERE currentActiveLinkshell = :n",
+                    named_params! { ":n": name },
+                )?;
+                tx.commit()
+            })
+            .await
+    }
+
+    /// The name of the character's active linkshell ('' for none).
+    pub async fn active_linkshell(&self, character_id: u32) -> Result<String> {
+        self.conn
+            .call_db(move |c| {
+                Ok(c.query_row(
+                    "SELECT currentActiveLinkshell FROM characters WHERE id = :p",
+                    named_params! { ":p": character_id },
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten()
+                .unwrap_or_default())
+            })
+            .await
+    }
+
+    pub async fn set_active_linkshell(&self, character_id: u32, name: &str) -> Result<()> {
+        let name = name.to_owned();
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    "UPDATE characters SET currentActiveLinkshell = :n WHERE id = :p",
+                    named_params! { ":n": name, ":p": character_id },
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Gil on hand for `chara_id`: the `itemId = 1_000_001` stack at
+    /// `itemPackage = 99`, or 0 when the character has never held gil.
+    /// Read-only (unlike `add_gil(id, 0)`, which creates the row).
+    pub async fn get_gil(&self, chara_id: u32) -> Result<i32> {
+        let rows = self
+            .get_item_package(chara_id, crate::inventory::PKG_CURRENCY_CRYSTALS as u32)
+            .await?;
+        Ok(rows
+            .iter()
+            .find(|i| i.item_id == 1_000_001)
+            .map(|i| i.quantity)
+            .unwrap_or(0))
     }
 
     /// Grant `delta` gil to `chara_id`. The 1.x gil stack lives as an
@@ -3515,7 +4202,7 @@ impl Database {
             .call_db(move |c| {
                 let v: Option<u32> = c
                     .query_row(
-                        "SELECT id FROM characters WHERE name = :n",
+                        "SELECT id FROM characters WHERE name = :n COLLATE NOCASE",
                         named_params! { ":n": name },
                         |r| r.get(0),
                     )
@@ -3524,6 +4211,326 @@ impl Database {
             })
             .await?;
         Ok(id)
+    }
+
+    /// (actor id, name) of the client's command static actors.
+    pub async fn command_static_actors(&self) -> Result<Vec<(u32, String)>> {
+        self.conn
+            .call_db(|c| {
+                let mut st = c.prepare("SELECT actorId, name FROM gamedata_static_actors WHERE classPath LIKE '/Command/%'")?;
+                st.query_map([], |r| Ok((r.get::<_, i64>(0)? as u32, r.get(1)?)))?.collect()
+            })
+            .await
+    }
+
+    /// The GM level of the account `character_id` belongs to (seed 103;
+    /// 0 when the character or account is unknown).
+    pub async fn gm_level_of_character(&self, character_id: u32) -> Result<u8> {
+        let v = self
+            .conn
+            .call_db(move |c| {
+                let v: Option<i64> = c
+                    .query_row(
+                        "SELECT u.gmLevel FROM characters ch JOIN users u ON u.id = ch.userId WHERE ch.id = :c",
+                        named_params! { ":c": character_id },
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                Ok(v.unwrap_or(0))
+            })
+            .await?;
+        Ok(v.clamp(0, 255) as u8)
+    }
+
+    /// Set the GM level of the account `character_id` belongs to. Returns
+    /// false when there is no such character.
+    pub async fn set_gm_level_of_character(&self, character_id: u32, level: u8) -> Result<bool> {
+        let n = self
+            .conn
+            .call_db(move |c| {
+                c.execute(
+                    "UPDATE users SET gmLevel = :l WHERE id = (SELECT userId FROM characters WHERE id = :c)",
+                    named_params! { ":c": character_id, ":l": level },
+                )
+            })
+            .await?;
+        Ok(n > 0)
+    }
+
+    /// (GM level, GM tag on) of the account `character_id` belongs to.
+    pub async fn gm_status_of_character(&self, character_id: u32) -> Result<(u8, bool)> {
+        let v = self
+            .conn
+            .call_db(move |c| {
+                let v: Option<(i64, i64)> = c
+                    .query_row(
+                        "SELECT u.gmLevel, u.gmTag FROM characters ch JOIN users u ON u.id = ch.userId WHERE ch.id = :c",
+                        named_params! { ":c": character_id },
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                Ok(v.unwrap_or((0, 0)))
+            })
+            .await?;
+        Ok((v.0.clamp(0, 255) as u8, v.1 != 0))
+    }
+
+    /// Turn the GM tag of `character_id`'s account on or off.
+    pub async fn set_gm_tag_of_character(&self, character_id: u32, on: bool) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    "UPDATE users SET gmTag = :t WHERE id = (SELECT userId FROM characters WHERE id = :c)",
+                    named_params! { ":c": character_id, ":t": on as i64 },
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// The account `character_id` belongs to.
+    pub async fn user_of_character(&self, character_id: u32) -> Result<Option<i64>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT userId FROM characters WHERE id = :c",
+                    named_params! { ":c": character_id },
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
+    }
+
+    /// Bug reports account `user_id` has filed since `since` (unix seconds).
+    pub async fn bug_reports_since(&self, user_id: i64, since: i64) -> Result<u32> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM module_bugreport_reports WHERE userId = :u AND createdAt >= :t",
+                    named_params! { ":u": user_id, ":t": since },
+                    |r| r.get(0),
+                )
+            })
+            .await
+    }
+
+    /// Save a bug report, held back from publishing until
+    /// [`Self::ready_bug_report`]. Returns its id.
+    pub async fn insert_bug_report(&self, b: &BugReport) -> Result<i64> {
+        let b = b.clone();
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    r"INSERT INTO module_bugreport_reports(userId, characterId, characterName, world,
+                        zoneId, zoneName, posX, posY, posZ, rotation, message, createdAt, nextTryAt)
+                      VALUES(:u, :c, :n, :w, :z, :zn, :x, :y, :zz, :r, :m, :t, :held)",
+                    named_params! {
+                        ":u": b.user_id, ":c": b.character_id, ":n": b.character_name,
+                        ":w": b.world, ":z": b.zone_id, ":zn": b.zone_name, ":x": b.x, ":y": b.y,
+                        ":zz": b.z, ":r": b.rotation, ":m": b.message, ":t": b.created_at,
+                        ":held": i64::MAX,
+                    },
+                )?;
+                Ok(c.last_insert_rowid())
+            })
+            .await
+    }
+
+    /// Bug report `id` has its files (comma separated): the web server may publish it.
+    pub async fn ready_bug_report(&self, id: i64, files: &str) -> Result<()> {
+        let files = files.to_string();
+        self.conn
+            .call_db(move |c| {
+                c.execute(
+                    "UPDATE module_bugreport_reports SET files = :f, nextTryAt = 0 WHERE id = :id",
+                    named_params! { ":f": files, ":id": id },
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// The gaol cell (1-based) `character_id` is held in, and why; None if free.
+    pub async fn jail_of_character(&self, character_id: u32) -> Result<Option<(u32, String)>> {
+        self.conn
+            .call_db(move |c| {
+                let v: Option<(Option<i64>, Option<String>)> = c
+                    .query_row(
+                        "SELECT jailCell, jailReason FROM characters WHERE id = :c",
+                        named_params! { ":c": character_id },
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                Ok(v.and_then(|(cell, why)| {
+                    cell.map(|n| (n.max(1) as u32, why.unwrap_or_default()))
+                }))
+            })
+            .await
+    }
+
+    /// Hold `character_id` in gaol cell `cell` (None: release them).
+    pub async fn set_jail_of_character(
+        &self,
+        character_id: u32,
+        jail: Option<(u32, String)>,
+    ) -> Result<()> {
+        self.conn
+            .call_db(move |c| {
+                let (cell, why) = match jail {
+                    Some((n, w)) => (Some(n as i64), Some(w)),
+                    None => (None, None),
+                };
+                c.execute(
+                    "UPDATE characters SET jailCell = :n, jailReason = :w WHERE id = :c",
+                    named_params! { ":c": character_id, ":n": cell, ":w": why },
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Move an offline character: where they appear at their next login.
+    pub async fn set_character_position(
+        &self,
+        character_id: u32,
+        zone_id: u32,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> Result<bool> {
+        let n = self
+            .conn
+            .call_db(move |c| {
+                c.execute(
+                    r"UPDATE characters SET currentZoneId = :z, positionX = :x, positionY = :y, positionZ = :pz,
+                        currentPrivateArea = NULL, currentPrivateAreaType = 0, destinationZoneId = 0
+                      WHERE id = :c",
+                    named_params! { ":c": character_id, ":z": zone_id, ":x": x, ":y": y, ":pz": z },
+                )
+            })
+            .await?;
+        Ok(n > 0)
+    }
+
+    /// The character's starting city (characters.initialTown: 1 Limsa
+    /// Lominsa, 2 Gridania, 3 Ul'dah; 0 unknown).
+    pub async fn initial_town_of_character(&self, character_id: u32) -> Result<u32> {
+        self.conn
+            .call_db(move |c| {
+                let v: Option<i64> = c
+                    .query_row(
+                        "SELECT initialTown FROM characters WHERE id = :c",
+                        named_params! { ":c": character_id },
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                Ok(v.unwrap_or(0).max(0) as u32)
+            })
+            .await
+    }
+
+    /// How many of item `catalog_id` the character has in package `package`.
+    pub async fn item_count(
+        &self,
+        character_id: u32,
+        package: u16,
+        catalog_id: u32,
+    ) -> Result<i64> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    r"SELECT COALESCE(SUM(i.quantity), 0) FROM characters_inventory ci
+                      JOIN server_items i ON i.id = ci.serverItemId
+                      WHERE ci.characterId = :c AND ci.itemPackage = :p AND i.itemId = :i",
+                    named_params! { ":c": character_id, ":p": package, ":i": catalog_id },
+                    |r| r.get(0),
+                )
+            })
+            .await
+    }
+
+    /// A character's name by id.
+    pub async fn character_name(&self, character_id: u32) -> Result<Option<String>> {
+        self.conn
+            .call_db(move |c| {
+                c.query_row(
+                    "SELECT name FROM characters WHERE id = :c",
+                    named_params! { ":c": character_id },
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
+    }
+
+    /// Zones whose id is `query`, or whose place name (Limsa Lominsa, Central
+    /// Shroud) or internal name (sea0Town01) contains it, ignoring case: (id,
+    /// place name), the exact place-name matches first.
+    pub async fn zones_matching(&self, query: &str) -> Result<Vec<(u32, String)>> {
+        // apostrophes don't count ("uldah" finds Ul'dah), and a * is any
+        // part of a name already ("bent*" is "bent")
+        let q = query.trim().replace(['\'', '’', '*'], "");
+        let rows = self
+            .conn
+            .call_db(move |c| {
+                let mut st = c.prepare(
+                    r"SELECT id, placeName FROM server_zones
+                      WHERE CAST(id AS TEXT) = :q OR REPLACE(placeName, '''', '') LIKE '%' || :q || '%'
+                         OR zoneName LIKE '%' || :q || '%'
+                      ORDER BY (CAST(id AS TEXT) = :q) DESC, (REPLACE(placeName, '''', '') = :q COLLATE NOCASE) DESC, id",
+                )?;
+                st.query_map(named_params! { ":q": q }, |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .await?;
+        Ok(rows)
+    }
+
+    /// Where to put a player arriving in `zone_id` by command: the zone's own
+    /// spawn point (server_zones_spawnlocations), else beside its aetheryte,
+    /// else where its first NPC stands. None if the server knows no spot.
+    pub async fn zone_landing(&self, zone_id: u32) -> Result<Option<(f32, f32, f32)>> {
+        let spot = self
+            .conn
+            .call_db(move |c| {
+                let v: Option<(f32, f32, f32)> = c
+                    .query_row(
+                        r"SELECT spawnX, spawnY, spawnZ FROM server_zones_spawnlocations
+                          WHERE zoneId = :z AND (privateAreaName IS NULL OR privateAreaName = '')
+                          ORDER BY id LIMIT 1",
+                        named_params! { ":z": zone_id },
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .optional()?;
+                Ok(v)
+            })
+            .await?;
+        if spot.is_some() {
+            return Ok(spot);
+        }
+        if let Some(a) = crate::actor::aetheryte::AETHERYTE_SPAWNS
+            .iter()
+            .find(|a| a.zone_id == zone_id)
+        {
+            return Ok(Some((a.x, a.y, a.z)));
+        }
+        let npc = self
+            .conn
+            .call_db(move |c| {
+                let v: Option<(f32, f32, f32)> = c
+                    .query_row(
+                        r"SELECT positionX, positionY, positionZ FROM server_spawn_locations
+                          WHERE zoneId = :z AND (privateAreaName IS NULL OR privateAreaName = '')
+                          ORDER BY id LIMIT 1",
+                        named_params! { ":z": zone_id },
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .optional()?;
+                Ok(v)
+            })
+            .await?;
+        Ok(npc)
     }
 
     /// Persist the migration-051 SNpc / Path Companion scratchpad
@@ -4766,7 +5773,7 @@ mod battle_npc_spawn_tests {
         // running the suite twice in quick succession (or with
         // --test-threads=N) otherwise hits the same path and tokio's
         // SQLite "file is locked" error fires from a stale WAL.
-        std::env::temp_dir().join(format!(
+        common::test_tmp::dir().join(format!(
             "garlemald-battle-npc-spawn-{label}-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -4987,7 +5994,7 @@ mod achievement_persist_tests {
     use super::*;
 
     fn tempdb(label: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
+        common::test_tmp::dir().join(format!(
             "garlemald-achievement-{label}-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5114,7 +6121,7 @@ mod equip_from_package_tests {
     use super::*;
 
     fn tempdb(label: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
+        common::test_tmp::dir().join(format!(
             "garlemald-equip-from-package-{label}-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5225,7 +6232,7 @@ mod key_item_tests {
     use common::db::ConnCallExt;
 
     fn tempdb(label: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
+        common::test_tmp::dir().join(format!(
             "garlemald-key-item-{label}-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5298,7 +6305,7 @@ mod add_harvest_item_stack_cap_tests {
     use common::db::ConnCallExt;
 
     fn tempdb(label: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
+        common::test_tmp::dir().join(format!(
             "garlemald-harvest-cap-{label}-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

@@ -180,6 +180,8 @@ pub enum LuaCommand {
         /// `actor:SetMod(...)` calls in the same drain target the
         /// right actor.
         expected_actor_id: u32,
+        /// Content instance (`crate::content_instance`) this belongs to; 0 = none.
+        instance_id: u32,
     },
     /// `director:AddMember(actor)` — port of C#
     /// `Director::AddMember`. Appends `member_actor_id` to the
@@ -291,6 +293,13 @@ pub enum LuaCommand {
         /// `currentParty:AddMember(actor.actorId)` calls during the
         /// same `onCreate` drain resolve correctly.
         expected_actor_id: u32,
+        /// Look and name for this spawn instead of the pool class's: an
+        /// escort's Path companion wears the player's own companion
+        /// (`SNPC_START - 1 + skin`) and nickname.
+        appearance_class_id: Option<u32>,
+        display_name: Option<String>,
+        /// Content instance (`crate::content_instance`) this belongs to; 0 = none.
+        instance_id: u32,
     },
     DespawnActor {
         zone_id: u32,
@@ -403,6 +412,22 @@ pub enum LuaCommand {
         player_id: u32,
         leve_id: u32,
         difficulty: u8,
+    },
+    /// `player:AddGuildleve(id)` for a battle leve: take it into a free
+    /// regional leve slot (`crate::leve::battle::add`).
+    AddGuildleve {
+        player_id: u32,
+        guildleve_id: u32,
+    },
+    /// `player:StartGuildleve(id, difficulty)` at a camp aetheryte.
+    StartBattleleve {
+        player_id: u32,
+        guildleve_id: u32,
+        difficulty: u8,
+    },
+    /// `player:AbandonGuildleve()` — give up the running battle leve.
+    AbandonBattleleve {
+        player_id: u32,
     },
     /// `player:BuyFromRetainer(retainerId, serverItemId)` — drain
     /// trigger for a bazaar purchase. Transactional: debits buyer
@@ -652,6 +677,81 @@ pub enum LuaCommand {
     /// `TeleportCommand.lua` destination gate and the aetheryte menu's
     /// per-child gates survive a relog. `aetheryte_id` is the
     /// aetheryte's actor class id (128xxxx — same namespace as
+    /// `WorldManager:RequestWorldLinkshellCreate(player, name, crest)`:
+    /// the Adventurers' Guild linkshell NPC. The script waits on
+    /// `ls_result` for the outcome (crate::linkshells::create).
+    LinkshellCreate {
+        player_id: u32,
+        name: String,
+        crest: u16,
+    },
+    /// `WorldManager:RequestWorldLinkshellCrestModify(player, name, crest)`.
+    LinkshellCrestModify {
+        player_id: u32,
+        name: String,
+        crest: u16,
+    },
+    /// `WorldManager:RequestWorldLinkshellDelete(player, name)`.
+    LinkshellDelete {
+        player_id: u32,
+        name: String,
+    },
+    /// The linkshell commands (LinkshellInviteCommand and the rest):
+    /// offer a linkpearl to `invitee` (an actor id).
+    LinkshellInvite {
+        player_id: u32,
+        name: String,
+        invitee: u32,
+    },
+    LinkshellInviteCancel {
+        player_id: u32,
+    },
+    LinkshellLeave {
+        player_id: u32,
+        name: String,
+    },
+    LinkshellKick {
+        player_id: u32,
+        name: String,
+        kicked: String,
+    },
+    LinkshellChangeActive {
+        player_id: u32,
+        name: String,
+    },
+    LinkshellRankChange {
+        player_id: u32,
+        name: String,
+        member: String,
+        rank: u8,
+    },
+    /// The party commands (crate::parties). `target` is a character name
+    /// or, from the target menu, an actor id.
+    PartyInvite {
+        player_id: u32,
+        target: String,
+    },
+    PartyLeave {
+        player_id: u32,
+    },
+    PartyDisband {
+        player_id: u32,
+    },
+    PartyKick {
+        player_id: u32,
+        target: String,
+    },
+    PartyPromote {
+        player_id: u32,
+        target: String,
+    },
+    /// `WorldManager:GroupInviteResult(player, groupType, result)`
+    /// (ConfirmGroupCommand): 1 accept, 2 decline.
+    GroupInviteResult {
+        player_id: u32,
+        group_type: u32,
+        result: u32,
+    },
     /// `characters.homepoint`).
     UnlockAetheryte {
         player_id: u32,
@@ -871,6 +971,8 @@ pub enum LuaCommand {
         director_name: String,
         director_actor_id: u32,
         content_area_actor_id: u32,
+        /// Content instance (`crate::content_instance`) this belongs to; 0 = none.
+        instance_id: u32,
     },
     /// `GetWorldManager():DoZoneChangeContent(player, contentArea, x, y,
     /// z, rot, spawnType)` — port of C#
@@ -889,6 +991,16 @@ pub enum LuaCommand {
         y: f32,
         z: f32,
         rotation: f32,
+        /// Content instance (`crate::content_instance`) this belongs to; 0 = none.
+        instance_id: u32,
+        /// `DoZoneChangeContentParty`: the player's party members in the
+        /// same zone enter the copy with them.
+        with_party: bool,
+    },
+    /// `player:LeaveContent()` — the player walks out of their content
+    /// copy (`quest_apply::apply_leave_content`); warp them out after.
+    LeaveContent {
+        player_id: u32,
     },
     /// `area:ContentFinished()` — flag the content area for cleanup
     /// once the last player exits. The combat tutorial calls this after
@@ -896,6 +1008,8 @@ pub enum LuaCommand {
     ContentFinished {
         parent_zone_id: u32,
         area_name: String,
+        /// Content instance (`crate::content_instance`) this belongs to; 0 = none.
+        instance_id: u32,
     },
     /// `player:SpawnMyRetainer(bell, retainerIndex)` — retail
     /// "summon retainer at a bell" path. Resolves `retainer_index`

@@ -358,7 +358,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("garlemald-ls-{nanos}-{seq}.db"))
+        common::test_tmp::dir().join(format!("garlemald-ls-{nanos}-{seq}.db"))
     }
 
     async fn seed_character(db: &Database, id: u32, name: &str) {

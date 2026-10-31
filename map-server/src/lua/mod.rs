@@ -43,7 +43,7 @@ pub mod scheduler;
 pub mod userdata;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -161,12 +161,47 @@ fn lua_param_to_value(lua: &Lua, param: common::luaparam::LuaParam) -> mlua::Res
         LuaParam::Actor(id) => Value::Integer(id as mlua::Integer),
         LuaParam::Byte(b) => Value::Integer(b as mlua::Integer),
         LuaParam::Short(s) => Value::Integer(s as mlua::Integer),
-        // Type7/Type9 are exotic — director scripts that need them can read
-        // the raw u32/u64 fallbacks; for now we'd never hit this on the
-        // EventStart path, so log and forward Nil.
-        LuaParam::Type7 { actor_id, .. } => Value::Integer(actor_id as mlua::Integer),
-        LuaParam::Type9 { item1, .. } => Value::Integer(item1 as mlua::Integer),
+        // Meteor's ItemRefParam / Type9 objects: EquipCommand reads
+        // `equippedItem.itemPackage` / `.slot`, and `itemDBIds.item1`.
+        LuaParam::Type7 {
+            actor_id,
+            unknown,
+            slot,
+            inventory_type,
+        } => Value::Table(item_ref_table(
+            lua,
+            actor_id,
+            unknown,
+            slot,
+            inventory_type,
+        )?),
+        LuaParam::Type9 { item1, item2 } => Value::Table(item_ids_table(lua, item1, item2)?),
     })
+}
+
+/// Meteor `LuaUtils.ItemRefParam` as a table: actorId, unknown, slot,
+/// itemPackage (an item the client points at: its package and slot).
+pub(crate) fn item_ref_table(
+    lua: &Lua,
+    actor_id: u32,
+    unknown: u8,
+    slot: u8,
+    package: u8,
+) -> mlua::Result<mlua::Table> {
+    let t = lua.create_table()?;
+    t.set("actorId", actor_id)?;
+    t.set("unknown", unknown)?;
+    t.set("slot", slot)?;
+    t.set("itemPackage", package)?;
+    Ok(t)
+}
+
+/// Meteor's Type9 param (two item database ids) as a table: item1, item2.
+pub(crate) fn item_ids_table(lua: &Lua, item1: u64, item2: u64) -> mlua::Result<mlua::Table> {
+    let t = lua.create_table()?;
+    t.set("item1", item1)?;
+    t.set("item2", item2)?;
+    Ok(t)
 }
 
 pub struct LuaEngine {
@@ -262,6 +297,34 @@ impl LuaEngine {
         // VM are preserved (their closures capture `catalogs` by Arc clone).
         install_globals(lua, queue, self.catalogs.clone())
             .map_err(|e| anyhow::anyhow!("install_globals: {e}"))
+    }
+
+    /// Whether the script at `path` defines the global function
+    /// `function_name` (false when it is missing, blank or fails to load).
+    /// A unique override only takes the functions it defines from its base
+    /// class: Meteor's `CallLuaFunctionNpc` calls the child's function when
+    /// the child has it and the parent's otherwise.
+    pub fn script_defines(&self, path: &Path, function_name: &str) -> bool {
+        path.exists()
+            && self
+                .load_script(path)
+                .is_ok_and(|(lua, _)| lua.globals().get::<Function>(function_name).is_ok())
+    }
+
+    /// The region small-talk script (`quests/dft/DftSea.lua`, `DftFst.lua`,
+    /// `DftWil.lua`, "active for all players at all times") holding a
+    /// default line for `actor_class_id`, if any: its `onEventStarted` plays
+    /// the line. Each loads in its own VM — they share global names
+    /// (`onTalk`, `defaultTalkWithInn`).
+    pub fn default_talk_script(&self, actor_class_id: u32) -> Option<PathBuf> {
+        ["DftSea", "DftFst", "DftWil"].into_iter().find_map(|name| {
+            let path = self.resolver.quest(name);
+            let (lua, _) = self.load_script(&path).ok()?;
+            let has: Function = lua.globals().get("HasDefaultTalk").ok()?;
+            has.call::<bool>(actor_class_id)
+                .unwrap_or(false)
+                .then_some(path)
+        })
     }
 
     /// Execute an arbitrary top-level function on a script. If the function
@@ -566,7 +629,8 @@ impl LuaEngine {
     }
 
     /// NPC-specific helper: try the unique-override script first, then fall
-    /// back to the base-class script. Mirrors the C# `CallLuaFunctionNpc`.
+    /// back to the base-class script when the override doesn't define
+    /// `function_name`. Mirrors the C# `CallLuaFunctionNpc`.
     pub fn call_npc(
         &self,
         base_class_path: Option<&str>,
@@ -577,7 +641,7 @@ impl LuaEngine {
         args: MultiValue,
     ) -> Result<LuaCallResult> {
         let child = self.resolver.npc(zone_name, class_name, unique_id);
-        if child.exists() {
+        if self.script_defines(&child, function_name) {
             return self.call(&child, function_name, args);
         }
         if let Some(base) = base_class_path {
@@ -1320,6 +1384,43 @@ impl LuaEngine {
         all_commands
     }
 
+    /// Resume player `owner`'s coroutines parked on `signal`, handing them
+    /// `value` as `waitForSignal`'s return (Meteor `OnSignal(name, value)`,
+    /// e.g. `ls_result`). Returns the commands they queued, for the caller
+    /// to apply; a coroutine that yields again is re-parked.
+    pub fn fire_owner_signal_and_drain(
+        &self,
+        owner: u32,
+        signal: &str,
+        value: i64,
+    ) -> Vec<LuaCommand> {
+        let due = self
+            .scheduler
+            .lock()
+            .map(|mut s| s.drain_signal_for(signal, owner))
+            .unwrap_or_default();
+        tracing::debug!(signal, owner, value, resumed = due.len(), "owner signal");
+        let mut all_commands = Vec::new();
+        for parked in due {
+            let queue = parked.queue.clone();
+            self.repoint_globals_for_resume(&parked);
+            let resume = parked.thread.resume::<MultiValue>(value);
+            all_commands.extend(CommandQueue::drain(&queue));
+            match resume {
+                Ok(v) => {
+                    if matches!(parked.thread.status(), mlua::ThreadStatus::Resumable) {
+                        let directive = scheduler::classify_yield_mv(&v);
+                        self.repark(parked, directive);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(signal, owner, error = %e, "owner signal: coroutine errored")
+                }
+            }
+        }
+        all_commands
+    }
+
     /// Notify the scheduler that `signal` fired, resuming every coroutine
     /// parked on it via [`Self::fire_signal_and_drain`] (commands discarded).
     pub fn fire_signal(&self, signal: &str) {
@@ -1523,7 +1624,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("garlemald-lua-engine-{nanos}"));
+        // the clock can repeat between parallel tests
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = common::test_tmp::dir().join(format!("garlemald-lua-engine-{nanos}-{seq}"));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -1537,6 +1641,147 @@ mod tests {
             mlua::MultiValue::new(),
         );
         assert!(result.is_err());
+    }
+
+    /// A unique override handles only the functions it defines: the blank
+    /// Limsa aetheryte override and a shop salesman's stock-only override
+    /// leave `onEventStarted` to their base classes.
+    #[test]
+    fn unique_override_defines_only_its_own_functions() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/lua"));
+        let engine = LuaEngine::new(root);
+        let r = engine.resolver();
+        let blank = r.npc("sea0Town01a", "AetheryteParent", "limsa_aetheryte");
+        assert!(blank.exists());
+        assert!(!engine.script_defines(&blank, "onEventStarted"));
+        assert!(engine.script_defines(
+            &r.base_class("/Chara/Npc/Object/Aetheryte/AetheryteParent"),
+            "onEventStarted"
+        ));
+        let stock = r.npc("wil0Town01", "PopulaceShopSalesman", "helena");
+        assert!(stock.exists());
+        assert!(!engine.script_defines(&stock, "onEventStarted"));
+        assert!(!engine.script_defines(&root.join("no/such/script.lua"), "onEventStarted"));
+
+        let tmp = tmpdir();
+        std::fs::write(
+            tmp.join("talks.lua"),
+            "function onEventStarted(player, npc, trigger) end",
+        )
+        .unwrap();
+        assert!(engine.script_defines(&tmp.join("talks.lua"), "onEventStarted"));
+    }
+
+    /// Each region's small-talk script answers for its own townsfolk, and
+    /// its `onEventStarted` plays the NPC's line through the static actor.
+    #[test]
+    fn default_talk_finds_each_regions_line_and_plays_it() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/lua"));
+        let engine = LuaEngine::new(root);
+        let file = |id| {
+            engine
+                .default_talk_script(id)
+                .and_then(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
+        };
+        assert_eq!(file(1_001_424).as_deref(), Some("DftWil.lua")); // Gegeissa
+        assert_eq!(file(1_001_305).as_deref(), Some("DftSea.lua")); // Y'alabali
+        assert_eq!(file(1_000_066).as_deref(), Some("DftFst.lua")); // Alixe
+        assert_eq!(file(1_000_460).as_deref(), Some("DftFst.lua")); // Hetzkin
+        assert_eq!(file(1_280_001), None); // the Limsa aetheryte
+
+        let npc_spec = LuaNpcSpec {
+            actor_id: 0x4400_0025,
+            name: "gegeissa".to_string(),
+            class_name: "PopulaceStandard".to_string(),
+            class_path: "/Chara/Npc/Populace/PopulaceStandard".to_string(),
+            unique_id: "gegeissa".to_string(),
+            zone_id: 170,
+            zone_name: "wil0Field01".to_string(),
+            state: 0,
+            pos: (0.0, 0.0, 0.0),
+            rotation: 0.0,
+            actor_class_id: 1_001_424,
+            quest_graphic: 0,
+        };
+        let result = engine.call_npc_on_event_started(
+            &engine.default_talk_script(1_001_424).unwrap(),
+            userdata::PlayerSnapshot {
+                actor_id: 1,
+                ..Default::default()
+            },
+            npc_spec,
+            "talkDefault".to_string(),
+            1,
+            Vec::new(),
+        );
+        assert!(
+            result.error.is_none(),
+            "DftWil onEventStarted errored: {:?}",
+            result.error
+        );
+        assert!(
+            result.commands.iter().any(|c| matches!(
+                c,
+                LuaCommand::RunEventFunction { function_name, args, .. }
+                    if function_name == "delegateEvent"
+                        && args.iter().any(|a| matches!(
+                            a,
+                            LuaCommandArg::String(s) if s == "defaultTalkWithGegeissa_001"
+                        ))
+            )),
+            "Gegeissa's default line must be delegated; got {:?}",
+            result.commands,
+        );
+    }
+
+    /// The Hamlet breeder greets with the client's `defTalk(player)`, then
+    /// ends the event.
+    #[test]
+    fn hamlet_breeder_greets() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/lua"));
+        let engine = LuaEngine::new(root);
+        let script = engine
+            .resolver()
+            .base_class("/Chara/Npc/Populace/PopulaceHamletBreeder");
+        assert!(engine.script_defines(&script, "onEventStarted"));
+        let npc_spec = LuaNpcSpec {
+            actor_id: 0x4400_03F5,
+            name: "tsimh_panipahr".to_string(),
+            class_name: "PopulaceHamletBreeder".to_string(),
+            class_path: "/Chara/Npc/Populace/PopulaceHamletBreeder".to_string(),
+            unique_id: "tsimh_panipahr".to_string(),
+            zone_id: 129,
+            zone_name: "sea0Field02".to_string(),
+            state: 0,
+            pos: (0.0, 0.0, 0.0),
+            rotation: 0.0,
+            actor_class_id: 1_500_011,
+            quest_graphic: 0,
+        };
+        let result = engine.call_npc_on_event_started(
+            &script,
+            userdata::PlayerSnapshot {
+                actor_id: 1,
+                ..Default::default()
+            },
+            npc_spec,
+            "talkDefault".to_string(),
+            1,
+            Vec::new(),
+        );
+        assert!(
+            result.error.is_none(),
+            "breeder onEventStarted errored: {:?}",
+            result.error
+        );
+        assert!(
+            result.commands.iter().any(|c| matches!(
+                c,
+                LuaCommand::RunEventFunction { function_name, .. } if function_name == "defTalk"
+            )),
+            "the breeder must call defTalk; got {:?}",
+            result.commands,
+        );
     }
 
     #[test]
@@ -2277,6 +2522,8 @@ mod tests {
             area_class_path: "/Area/PrivateArea/Content/PrivateAreaMasterSimpleContent".to_string(),
             director_name: "Quest/QuestDirectorMan0g001".to_string(),
             director_actor_id: 0x6608_0001,
+            instance_id: 0,
+            slot: 0,
             queue,
             players: Vec::new(),
             allies: Vec::new(),

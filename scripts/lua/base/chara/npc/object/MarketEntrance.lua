@@ -97,8 +97,7 @@ function onEventStarted(player, npc, triggerName)
     local itemSearchId = 11000125;   
     
     local worldMaster = GetWorldMaster(); 
-    local pos = player:GetPos();
-    local currZone = pos[4];
+    local currZone = player:GetZoneID();
     
     if (currZone == 133 or currZone == 230 or currZone == 155 or currZone == 206 or currZone == 175 or currZone == 209) then 
         exitPlaceName = 0;  -- If in city, hide city menu option
@@ -126,7 +125,7 @@ function onEventStarted(player, npc, triggerName)
             end
             
         elseif (choice == 1519 or choice == 2534 or choice == 3533) then -- Mercentile Wards
-                player:SendMessage(0x20, "", "[MarketEntrance] DEBUG: "..choice);
+                player:SendMessage(0x20, "", "The Mercantile Wards are not open on this server yet.");
         elseif (choice == 1512 or choice == 2526 or choice == 3514) then -- GC Office
                 warp = GC_ENTRANCE[choice];
                 player:SendGameMessage(player, worldMaster, 60004, 0x20, choice);

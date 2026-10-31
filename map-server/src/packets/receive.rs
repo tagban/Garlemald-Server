@@ -378,6 +378,9 @@ pub struct ChatMessagePacket {
     pub pos_rot: f32,
     pub log_type: u32,
     pub message: String,
+    /// The message's bytes (up to the terminating NUL), auto-translate
+    /// entries included: `message` loses them (crate::autotranslate).
+    pub raw_message: Vec<u8>,
 }
 
 impl ChatMessagePacket {
@@ -389,6 +392,9 @@ impl ChatMessagePacket {
         let pos_z = c.read_f32::<LittleEndian>()?;
         let pos_rot = c.read_f32::<LittleEndian>()?;
         let log_type = c.read_u32::<LittleEndian>()?;
+        let start = (c.position() as usize).min(data.len());
+        let tail = &data[start..(start + 0x200).min(data.len())];
+        let raw_message = tail[..tail.iter().position(|&b| b == 0).unwrap_or(tail.len())].to_vec();
         let message = read_null_term_ascii(&mut c, 0x200);
         Ok(Self {
             pos_x,
@@ -397,6 +403,7 @@ impl ChatMessagePacket {
             pos_rot,
             log_type,
             message,
+            raw_message,
         })
     }
 }

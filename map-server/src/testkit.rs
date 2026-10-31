@@ -220,6 +220,8 @@ impl OpenerCombat {
             area_class_path: "/Area/PrivateArea/ContentArea".to_string(),
             director_name: cfg.director_name.to_string(),
             director_actor_id: director_id,
+            instance_id: 0,
+            slot: 0,
             queue: CommandQueue::new(),
             players: Vec::new(),
             allies: Vec::new(),
@@ -631,5 +633,5 @@ fn tempdb() -> std::path::PathBuf {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("garlemald-testkit-{nanos}-{seq}.db"))
+    common::test_tmp::dir().join(format!("garlemald-testkit-{nanos}-{seq}.db"))
 }

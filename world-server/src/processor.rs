@@ -27,7 +27,7 @@ use common::BasePacket;
 use common::subpacket::{SUBPACKET_TYPE_GAMEMESSAGE, SubPacket};
 
 use crate::data::{ClientHandle, Session, SessionChannel};
-use crate::database::Database;
+use crate::database::{Database, NewWorldSession};
 use crate::group::{LINKSHELL_TYPE, PARTY_TYPE};
 use crate::packets::receive as rx;
 use crate::packets::send as tx;
@@ -38,6 +38,8 @@ pub struct PacketProcessor {
     pub db: Arc<Database>,
     pub world: Arc<WorldMaster>,
     pub sessions: Arc<SessionRegistry>,
+    /// This world's id in the server list (`world_sessions.world_id`).
+    pub world_id: u32,
 }
 
 /// A session-begin confirm from the map server carries a non-zero `error_code`
@@ -141,10 +143,45 @@ impl PacketProcessor {
 
         if channel == SessionChannel::Zone {
             let zone_id = session.state.lock().await.current_zone_id;
-            if let Some(handle) = self.world.zone_server_for(zone_id).await {
+            let handle = self.world.zone_server_for(zone_id).await;
+            if let Some(handle) = &handle {
                 session.state.lock().await.routing1 = Some(handle.clone());
                 let begin = tx::build_session_begin(hello.session_id, true);
                 handle.send_bytes(begin.to_bytes()).await;
+            }
+            // One session per account: another character of this account
+            // still in the world is ended, as a duplicate login is below.
+            let begun = self
+                .db
+                .begin_world_session(NewWorldSession {
+                    character_id: hello.session_id,
+                    world_id: self.world_id,
+                    zone_id,
+                    map_server: handle
+                        .as_ref()
+                        .map(|h| format!("{}:{}", h.address, h.port))
+                        .unwrap_or_default(),
+                    client_ip: client.peer.clone(),
+                    conn_seq: client.conn_seq,
+                })
+                .await;
+            match begun {
+                Ok(Some(other)) => {
+                    tracing::info!(
+                        session = hello.session_id,
+                        other,
+                        "another character of this account is online; ending it"
+                    );
+                    for ch in [SessionChannel::Zone, SessionChannel::Chat] {
+                        if let Some(old) = self.sessions.get(ch, other).await {
+                            self.end_existing_session(ch, old, client).await;
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(session = hello.session_id, error = %e, "couldn't record the world session")
+                }
             }
         }
         // Evict any prior session on this (channel, id) before installing the
@@ -230,6 +267,11 @@ impl PacketProcessor {
                 }
             }
             self.sessions.remove_if(channel, id, client.conn_seq).await;
+            if channel == SessionChannel::Zone
+                && let Err(e) = self.db.end_world_session(id, client.conn_seq).await
+            {
+                tracing::warn!(session = id, error = %e, "couldn't end the world session");
+            }
             tracing::info!(session = id, "session torn down on disconnect");
         }
     }
@@ -352,6 +394,9 @@ impl PacketProcessor {
                         );
                     } else {
                         tracing::info!(session = p.session_id, "session begin confirmed");
+                        if let Err(e) = self.db.world_session_in_world(p.session_id).await {
+                            tracing::warn!(session = p.session_id, error = %e, "couldn't update the world session");
+                        }
                     }
                 }
             }
@@ -365,7 +410,22 @@ impl PacketProcessor {
                         if let Some(handle) = self.world.zone_server_for(p.destination_zone).await {
                             let begin = tx::build_session_begin(p.session_id, false);
                             handle.send_bytes(begin.to_bytes()).await;
-                            session.state.lock().await.routing1 = Some(handle);
+                            let map = format!("{}:{}", handle.address, handle.port);
+                            session
+                                .in_world
+                                .store(false, std::sync::atomic::Ordering::Relaxed);
+                            {
+                                let mut state = session.state.lock().await;
+                                state.routing1 = Some(handle);
+                                state.current_zone_id = p.destination_zone;
+                            }
+                            if let Err(e) = self
+                                .db
+                                .world_session_zoning(p.session_id, Some((p.destination_zone, map)))
+                                .await
+                            {
+                                tracing::warn!(session = p.session_id, error = %e, "couldn't update the world session");
+                            }
                         }
                     } else {
                         // Guard against a stale teardown: if a duplicate login
@@ -384,6 +444,11 @@ impl PacketProcessor {
                                 "ignoring stale map session end confirm; newer zone connection is active"
                             );
                         } else {
+                            if let Some(seq) = current
+                                && let Err(e) = self.db.end_world_session(p.session_id, seq).await
+                            {
+                                tracing::warn!(session = p.session_id, error = %e, "couldn't end the world session");
+                            }
                             self.sessions
                                 .remove(SessionChannel::Zone, p.session_id)
                                 .await;
@@ -402,6 +467,9 @@ impl PacketProcessor {
                         let state = session.state.lock().await;
                         (state.routing1.clone(), state.routing2.clone())
                     };
+                    if let Err(e) = self.db.world_session_zoning(p.session_id, None).await {
+                        tracing::warn!(session = p.session_id, error = %e, "couldn't update the world session");
+                    }
                     if let Some(handle) = r1 {
                         let end = tx::build_session_end_with_zone(
                             p.session_id,

@@ -126,6 +126,10 @@ impl SessionRegistry {
         }
     }
 
+    pub async fn zone_ids(&self) -> Vec<u32> {
+        self.zone.lock().await.keys().copied().collect()
+    }
+
     #[allow(dead_code)]
     pub async fn get_name(&self, id: u32) -> Option<String> {
         self.id_to_name.lock().await.get(&id).cloned()
@@ -204,7 +208,32 @@ pub async fn run(
         db,
         world,
         sessions,
+        world_id: config.world_id(),
     });
+
+    // Nobody is online until they connect: rows left by a crash or a kill go.
+    // Then every 30 s the connected players are marked seen, so a row this
+    // server stops refreshing (it crashed) reads as offline within 90 s.
+    match processor.db.clear_world_sessions().await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(sessions = n, "cleared the sessions the last run left"),
+        Err(e) => tracing::warn!(error = %e, "couldn't clear world_sessions"),
+    }
+    {
+        let p = Arc::clone(&processor);
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                every.tick().await;
+                let ids = p.sessions.zone_ids().await;
+                if !ids.is_empty()
+                    && let Err(e) = p.db.touch_world_sessions(ids).await
+                {
+                    tracing::warn!(error = %e, "couldn't refresh world_sessions");
+                }
+            }
+        });
+    }
 
     // Open connections to every map (zone) server advertised in
     // `server_zones`, one per unique (ip, port). Mirrors the C#
@@ -260,7 +289,7 @@ async fn handle_connection(
     // Each accepted socket draws a unique `conn_seq` so a duplicate login can
     // supersede this connection without a stale teardown wiping the newer one.
     let conn_seq = CONN_SEQ.fetch_add(1, Ordering::Relaxed);
-    let client = ClientHandle::new(0, conn_seq, tx);
+    let client = ClientHandle::new(0, conn_seq, tx).with_peer(peer.ip().to_string());
 
     let mut buffer = vec![0u8; BUFFER_SIZE];
     let mut pending = 0usize;
@@ -488,6 +517,12 @@ async fn run_zone_connection(
                 };
                 if let Some(session) = session {
                     session.client.send_bytes(sub.to_bytes()).await;
+                    if session.channel == SessionChannel::Zone
+                        && !session.in_world.swap(true, Ordering::Relaxed)
+                        && let Err(e) = processor.db.world_session_in_world(target).await
+                    {
+                        tracing::warn!(session = target, error = %e, "couldn't update the world session");
+                    }
                 } else {
                     tracing::debug!(target, "zone reply to unknown session");
                 }

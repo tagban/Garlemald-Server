@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the web (login/signup) server. Uses ./configs/web.toml by default —
+# Run the web (login/signup) server. Uses settings/web.toml over settings/default/web.toml —
 # the same default the binary itself uses. Extra args are passed through
 # to the `web-server` CLI (e.g. --ip 0.0.0.0 --port 54993 --config /path/to.toml).
 set -euo pipefail

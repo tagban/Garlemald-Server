@@ -2,6 +2,19 @@ require("global");
 
 local initClassItems, equipClassItems, initRaceItems;
 
+--A reconnect in the opening zone replays the opening: clear the quest's
+--data and flags, and send a relog during the combat tutorial (SEQ_005,
+--whose content instance is gone after a relog) back to SEQ_000 so the
+--walk-up and talk steps lead into the fight again. Without this the
+--player was stranded with nothing armed. (Garlemald-Server #197.)
+local function resetOpeningQuest(quest)
+	quest:ClearQuestData();
+	quest:ClearQuestFlags();
+	if (quest:getSequence() == 5) then
+		quest:StartSequence(0);
+	end
+end
+
 function onBeginLogin(player)
 	--New character, set the initial quest. LuaPlayer's snapshot of
 	--active quests is captured once at the top of this hook, so a
@@ -51,8 +64,7 @@ function onBeginLogin(player)
 		player.positionZ = -36.91;
 		player.rotation = 0.025;
 		if (player:HasQuest(110001) == true) then
-			player:GetQuest(110001):ClearQuestData();
-			player:GetQuest(110001):ClearQuestFlags();
+			resetOpeningQuest(player:GetQuest(110001));
 		end
 	elseif ((player:HasQuest(110005) == true or pendingOpenerQuest == 110005) and player:GetZoneID() == 166) then
 		director = player:GetZone():CreateDirector("OpeningDirector", false);
@@ -66,8 +78,7 @@ function onBeginLogin(player)
 		player.positionZ = -706.1074;
 		player.rotation = -1.26721;
 		if (player:HasQuest(110005) == true) then
-			player:GetQuest(110005):ClearQuestData();
-			player:GetQuest(110005):ClearQuestFlags();
+			resetOpeningQuest(player:GetQuest(110005));
 		end
 	elseif ((player:HasQuest(110009) == true or pendingOpenerQuest == 110009) and player:GetZoneID() == 184) then
 		director = player:GetZone():CreateDirector("OpeningDirector", false);
@@ -81,8 +92,7 @@ function onBeginLogin(player)
 		player.positionZ = 133.6561;
 		player.rotation = -2.849384;
 		if (player:HasQuest(110009) == true) then
-			player:GetQuest(110009):ClearQuestData();
-			player:GetQuest(110009):ClearQuestFlags();
+			resetOpeningQuest(player:GetQuest(110009));
 		end
 	end
 end
@@ -136,19 +146,30 @@ function initClassItems(player)
 		player:GetItemPackage(0):AddItems({5030101, 8030445, 8050031, 8080246, 8090208});
 
 	--DoH
-	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 29) then	--
-	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 30) then	--
-	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 31) then	--
-	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 32) then	--
-	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 33) then	--
-	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 34) then	--
-	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 35) then	--
-	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 36) then	--
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 29) then	--CRP
+		player:GetItemPackage(0):AddItems({6010001, 8050621, 8070511, 8080709, 8090007});
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 30) then	--BSM
+		player:GetItemPackage(0):AddItems({6020001, 8050031, 8070019, 8080016, 8090007});
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 31) then	--ARM
+		player:GetItemPackage(0):AddItems({6030001, 8031215, 8050030, 8080017, 8090007});
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 32) then	--GSM
+		player:GetItemPackage(0):AddItems({6040001, 8030032, 8050150, 8080501, 8090007});
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 33) then	--LTW
+		player:GetItemPackage(0):AddItems({6050003, 8010545, 8030446, 8080816, 8090007});
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 34) then	--WVR
+		player:GetItemPackage(0):AddItems({6060006, 8030547, 8050347, 8080347, 8090007});
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 35) then	--ALC
+		player:GetItemPackage(0):AddItems({6070001, 8010838, 8030546, 8050031, 8090007});
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 36) then	--CUL
+		player:GetItemPackage(0):AddItems({6080001, 8010646, 8031415, 8080602, 8090007});
 
 	--DoL
 	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 39) then	--MIN
+		player:GetItemPackage(0):AddItems({7010005, 8050032, 8070401, 8080426, 8090907});
 	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 40) then	--BTN
+		player:GetItemPackage(0):AddItems({7020002, 8012009, 8031020, 8050450, 8090907});
 	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 41) then	--FSH
+		player:GetItemPackage(0):AddItems({7030002, 8012010, 8050622, 8080425, 8090907});
 	end
 
 	equipClassItems(player);
@@ -180,6 +201,30 @@ function equipClassItems(player)
 		player:GetEquipment():Set({0, 10, 12, 14, 15},{0, 1, 2, 3, 4},0);
 	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 23) then	--CNJ
 		player:GetEquipment():Set({0, 10, 12, 14, 15},{0, 1, 2, 3, 4},0);
+	--DoH / DoL: tool + starter outfit, decoded from the lobby's per-class
+	--creation appearance (character_creator.rs) via gamedata_items_graphics.
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 29) then	--CRP
+		player:GetEquipment():Set({0, 12, 13, 14, 15},{0, 1, 2, 3, 4},0);
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 30) then	--BSM
+		player:GetEquipment():Set({0, 12, 13, 14, 15},{0, 1, 2, 3, 4},0);
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 31) then	--ARM
+		player:GetEquipment():Set({0, 10, 12, 14, 15},{0, 1, 2, 3, 4},0);
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 32) then	--GSM
+		player:GetEquipment():Set({0, 10, 12, 14, 15},{0, 1, 2, 3, 4},0);
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 33) then	--LTW
+		player:GetEquipment():Set({0, 8, 10, 14, 15},{0, 1, 2, 3, 4},0);
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 34) then	--WVR
+		player:GetEquipment():Set({0, 10, 12, 14, 15},{0, 1, 2, 3, 4},0);
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 35) then	--ALC
+		player:GetEquipment():Set({0, 8, 10, 12, 15},{0, 1, 2, 3, 4},0);
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 36) then	--CUL
+		player:GetEquipment():Set({0, 8, 10, 14, 15},{0, 1, 2, 3, 4},0);
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 39) then	--MIN
+		player:GetEquipment():Set({0, 12, 13, 14, 15},{0, 1, 2, 3, 4},0);
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 40) then	--BTN
+		player:GetEquipment():Set({0, 8, 10, 12, 15},{0, 1, 2, 3, 4},0);
+	elseif (player.charaWork.parameterSave.state_mainSkill[0] == 41) then	--FSH
+		player:GetEquipment():Set({0, 8, 12, 14, 15},{0, 1, 2, 3, 4},0);
 	end
 
 end

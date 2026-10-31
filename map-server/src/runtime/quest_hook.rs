@@ -81,6 +81,7 @@ pub async fn fire_on_kill_bnpc(
             mp: c.chara.mp,
             max_mp: c.chara.max_mp,
             tp: c.chara.tp,
+            current_gil: c.chara.gil.max(0) as u32,
             active_quests: ids.clone(),
             active_quest_states: c
                 .quest_journal
@@ -112,6 +113,13 @@ pub async fn fire_on_kill_bnpc(
             guardian: c.chara.guardian,
             birth_month: c.chara.birthday_month,
             birth_day: c.chara.birthday_day,
+            current_class: c.chara.class.max(0) as u8,
+            current_level: c.chara.level,
+            current_job: c.chara.current_job as u8,
+            gc_current: c.chara.gc_current,
+            gc_rank_limsa: c.chara.gc_rank_limsa,
+            gc_rank_gridania: c.chara.gc_rank_gridania,
+            gc_rank_uldah: c.chara.gc_rank_uldah,
             ..Default::default()
         };
         (ids, snap)
@@ -229,7 +237,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("garlemald-onkillbnpc-{nanos}"));
+        let dir = common::test_tmp::dir().join(format!("garlemald-onkillbnpc-{nanos}"));
         std::fs::create_dir_all(dir.join("quests/man")).unwrap();
         dir
     }
@@ -287,7 +295,7 @@ mod tests {
         let registry = ActorRegistry::new();
         registry.insert(handle.clone()).await;
         let world = WorldManager::new();
-        let db_path = std::env::temp_dir().join(format!(
+        let db_path = common::test_tmp::dir().join(format!(
             "garlemald-quest-hook-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -333,7 +341,7 @@ mod tests {
         let registry = ActorRegistry::new();
         registry.insert(handle.clone()).await;
         let world = WorldManager::new();
-        let db_path = std::env::temp_dir().join(format!(
+        let db_path = common::test_tmp::dir().join(format!(
             "garlemald-quest-hook-empty-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -393,7 +401,7 @@ mod tests {
         registry.insert(handle.clone()).await;
         let world = WorldManager::new();
 
-        let db_path = std::env::temp_dir().join(format!(
+        let db_path = common::test_tmp::dir().join(format!(
             "garlemald-quest-hook-drain-{}.db",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

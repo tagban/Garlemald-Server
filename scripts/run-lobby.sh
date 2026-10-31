@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the lobby server. Uses ./configs/lobby.toml by default — the same
+# Run the lobby server. Uses settings/lobby.toml over settings/default/lobby.toml — the same
 # default the binary itself uses. Extra args are passed through to the
 # `lobby-server` CLI (e.g. --ip 0.0.0.0 --port 54994 --config /path/to.toml).
 set -euo pipefail

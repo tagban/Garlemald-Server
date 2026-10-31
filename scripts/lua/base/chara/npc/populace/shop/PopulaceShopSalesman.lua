@@ -583,8 +583,6 @@ end
 function openShopMenu(player, menuId, shopPack, itemRangeStart, itemRangeEnd, shopCurrency)
 
     callClientFunction(player, "openShopBuy", player, shopPack, shopCurrency);
-    
-    player:SendMessage(0x20, "", "shopPack: "..shopPack.."   Range: "..itemRangeStart.."-"..itemRangeEnd);
 
     while (true) do     
         buyResult, quantity = callClientFunction(player, "selectShopBuy", player);

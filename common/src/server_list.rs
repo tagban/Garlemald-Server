@@ -16,7 +16,9 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The world/server list served at character select — `configs/servers.toml`.
+//! The world/server list served at character select — `settings/servers.toml`
+//! over `settings/default/servers.toml` (see [`crate::settings`]; a
+//! `[[servers]]` list in the override replaces the default list).
 //!
 //! Deployment configuration (world name, advertised address/port, list
 //! position, active flag) used to live in the `servers` SQLite table, which
@@ -28,6 +30,7 @@
 //! id            = 1
 //! name          = "Fernehalwes"
 //! address       = "127.0.0.1"
+//! # lan_address = "auto"   # optional: what clients on the server's own network get
 //! port          = 54992
 //! list_position = 1
 //! max_chars     = 5000
@@ -41,7 +44,7 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 
 /// The parsed server list.
@@ -61,6 +64,14 @@ pub struct ServerEntry {
     pub name: String,
     /// Address handed to the client for the lobby → world handoff.
     pub address: String,
+    /// Address handed instead to clients on the server's own network (a
+    /// private, link-local or loopback source address), for hosts behind a
+    /// router that can't send its LAN back to its own public address
+    /// (hairpin NAT). `"auto"` hands out the address the client used to
+    /// reach the lobby, which suits a lobby and world on the same machine.
+    /// Unset: every client gets `address`.
+    #[serde(default)]
+    pub lan_address: Option<String>,
     pub port: u16,
     #[serde(default = "default_list_position")]
     pub list_position: u16,
@@ -91,6 +102,7 @@ impl Default for ServerList {
                 id: 1,
                 name: "Fernehalwes".to_string(),
                 address: "127.0.0.1".to_string(),
+                lan_address: None,
                 port: 54992,
                 list_position: 1,
                 max_chars: 5000,
@@ -107,20 +119,8 @@ impl ServerList {
     /// warning) so a fresh checkout boots with zero config edits; a file
     /// that exists but fails to parse is a hard error — silently masking a
     /// typo'd config with defaults would be worse than failing the boot.
-    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        if !path.exists() {
-            tracing::warn!(
-                ?path,
-                "server list config not found, using localhost default"
-            );
-            return Ok(Self::default());
-        }
-        let raw =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let list: ServerList =
-            toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
-        Ok(list)
+    pub fn load(override_path: Option<&Path>) -> Result<Self> {
+        crate::settings::load("servers", override_path)
     }
 
     /// Worlds shown at character select, in config-file order.
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn missing_file_falls_back_to_localhost_default() {
-        let list = ServerList::load("/nonexistent/servers.toml").unwrap();
+        let list = ServerList::load(Some(Path::new("/nonexistent/servers.toml"))).unwrap();
         assert_eq!(list.servers.len(), 1);
         let w = &list.servers[0];
         assert_eq!((w.id, w.port, w.is_active), (1, 54992, true));

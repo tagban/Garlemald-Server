@@ -663,6 +663,127 @@ pub static AETHERYTE_SPAWNS: &[AetheryteSpawn] = &[
     }, // Jagged Crest Cave
 ];
 
+/// Names for the teleport destinations, by aetheryte id: the camps (main
+/// aetherytes) and the aetheryte gates around them, for the `camp` command.
+/// The gate names come from the comments in `scripts/lua/aetheryte.lua`; the
+/// camps are named by zone. Unsure: which of the two Western La Noscea camps
+/// (1280003, 1280004) is Skull Valley and which Bald Knoll.
+pub static AETHERYTE_NAMES: &[(u32, &str)] = &[
+    (1280001, "Limsa Lominsa"),
+    (1280002, "Camp Bearded Rock"),
+    (1280003, "Camp Skull Valley"),
+    (1280004, "Camp Bald Knoll"),
+    (1280005, "Camp Bloodshore"),
+    (1280006, "Camp Iron Lake"),
+    (1280008, "Widow Cliffs"),
+    (1280009, "Moraby Bay"),
+    (1280010, "Woad Whisper Canyon"),
+    (1280011, "Isles of Umbra"),
+    (1280012, "Tiger Helm Island"),
+    (1280013, "Bloodshore"),
+    (1280014, "Agelyss Wise"),
+    (1280015, "Zelma's Run"),
+    (1280016, "Bronze Lake"),
+    (1280017, "Oakwood"),
+    (1280018, "Mistbeard Cove"),
+    (1280031, "Ul'dah"),
+    (1280032, "Camp Black Brush"),
+    (1280033, "Camp Drybone"),
+    (1280034, "Camp Horizon"),
+    (1280035, "Camp Bluefog"),
+    (1280036, "Camp Brokenwater"),
+    (1280037, "Cactus Basin"),
+    (1280038, "Four Sisters"),
+    (1280039, "Halatali"),
+    (1280040, "Burning Wall"),
+    (1280041, "Sandgate"),
+    (1280042, "Nophica's Wells"),
+    (1280043, "Footfalls"),
+    (1280044, "Scorpion Keep"),
+    (1280045, "Hidden Gorge"),
+    (1280046, "Sea of Spires"),
+    (1280047, "Cutters Pass"),
+    (1280048, "Red Labyrinth"),
+    (1280049, "Burnt Lizard Creek"),
+    (1280050, "Zanr'ak"),
+    (1280052, "Nanawa Mines"),
+    (1280054, "Copperbell Mines"),
+    (1280061, "Gridania"),
+    (1280062, "Camp Bentbranch"),
+    (1280063, "Camp Nine Ivies"),
+    (1280064, "Camp Emerald Moss"),
+    (1280065, "Camp Tranquil"),
+    (1280066, "Camp Crimson Bark"),
+    (1280067, "Humblehearth"),
+    (1280068, "Sorrel Haven"),
+    (1280069, "Five Hangs"),
+    (1280070, "Verdant Drop"),
+    (1280071, "Lynxpelt Patch"),
+    (1280072, "Larkscall"),
+    (1280073, "Treespeak"),
+    (1280074, "Aldersprings"),
+    (1280075, "Lasthold"),
+    (1280076, "Lichenweed"),
+    (1280077, "Murmur Rills"),
+    (1280078, "Turning Leaf"),
+    (1280079, "Silent Arbor"),
+    (1280080, "Longroot"),
+    (1280081, "Snakemolt"),
+    (1280082, "Mun-Tuy Cellars"),
+    (1280083, "Tam-Tara Deepcroft"),
+    (1280092, "Camp Dragonhead"),
+    (1280093, "Camp Crooked Fork"),
+    (1280094, "Camp Glory"),
+    (1280095, "Camp Ever Lakes"),
+    (1280096, "Camp Riversmeet"),
+    (1280097, "Boulder Downs"),
+    (1280098, "Prominence Point"),
+    (1280099, "Feathergorge"),
+    (1280100, "Maiden Glen"),
+    (1280101, "Hushed Boughs"),
+    (1280102, "Scarwing Fall"),
+    (1280103, "Weeping Vale"),
+    (1280104, "Clearwater"),
+    (1280105, "Teriggans Stand"),
+    (1280106, "Shepherd Peak"),
+    (1280107, "Fellwood"),
+    (1280108, "Wyrmkings Perch"),
+    (1280109, "The Lance"),
+    (1280110, "Twinpools"),
+    (1280121, "Camp Brittlebark"),
+    (1280122, "Camp Revenant's Toll"),
+    (1280123, "Fogfens"),
+    (1280124, "Singing Shards"),
+    (1280125, "Jagged Crest Cave"),
+];
+
+/// The destinations whose name contains `query` (ignoring case, and
+/// apostrophes and the word "camp" optional) or whose id is `query`, camps
+/// first. An exact name match comes back alone.
+pub fn named_matching(query: &str) -> Vec<(&'static AetheryteSpawn, &'static str)> {
+    let norm = |s: &str| {
+        s.to_lowercase()
+            .replace(['\'', '’', '*'], "")
+            .trim_start_matches("camp ")
+            .trim()
+            .to_string()
+    };
+    let q = norm(query);
+    if q.is_empty() {
+        return Vec::new();
+    }
+    let mut hits: Vec<(&'static AetheryteSpawn, &'static str)> = AETHERYTE_NAMES
+        .iter()
+        .filter(|(id, name)| id.to_string() == q || norm(name).contains(&q))
+        .filter_map(|(id, name)| lookup(*id).map(|a| (a, *name)))
+        .collect();
+    if let Some(exact) = hits.iter().find(|(_, n)| norm(n) == q).copied() {
+        return vec![exact];
+    }
+    hits.sort_by_key(|(a, n)| (!n.starts_with("Camp "), a.aetheryte_id));
+    hits
+}
+
 /// Binary-search the table for an aetheryte id. Returns `None` for
 /// unknown ids — `runtime::dispatcher::apply_home_point_revive` treats
 /// that as "no usable homepoint" and refuses to warp (HP/state still

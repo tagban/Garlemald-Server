@@ -297,6 +297,16 @@ function IsQuestENPC(player, quest, npc)
     return defaultTalkWil[npc:GetActorClassId()] ~= nil;
 end
 
+-- The server's default talk (map-server event/dispatcher.rs): a townsperson
+-- (PopulaceStandard) that no quest claims and whose own script has no line.
+function HasDefaultTalk(classId)
+    return defaultTalkWil[classId] ~= nil;
+end
+
+function onEventStarted(player, npc, triggerName)
+    onTalk(player, GetStaticActor("DftWil"), npc, triggerName);
+end
+
 
 
 function defaultTalkWithInn(player, quest, clientFunc)

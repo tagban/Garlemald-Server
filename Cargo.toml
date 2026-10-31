@@ -44,6 +44,7 @@ tower-http = { version = "0.6", features = ["trace"] }
 argon2 = "0.5"
 http = "1"
 percent-encoding = "2"
+ureq = { version = "2", features = ["json"] }
 
 [profile.release]
 lto = "thin"

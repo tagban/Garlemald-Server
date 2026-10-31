@@ -36,9 +36,14 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 mod achievement;
 mod actor;
+mod autotranslate;
 mod battle;
+mod bug_report;
+mod command_actors;
+mod command_permissions;
 mod command_processor;
 mod config;
+mod content_instance;
 mod crafting;
 mod data;
 mod database;
@@ -46,9 +51,14 @@ mod director;
 mod event;
 mod gamedata;
 mod gathering;
+mod gm_tags;
 mod group;
 mod inventory;
+mod jail;
 mod leve;
+mod linkshells;
+mod modules;
+mod parties;
 // The Lua content runtime is the one surface the in-process test harnesses
 // (e.g. the `content-test` quest-walkthrough exe) link against.
 pub mod lua;
@@ -92,8 +102,8 @@ pub async fn run() -> Result<()> {
     // In smoke mode we never reach the accept loop, so also skip the stdin
     // reader that would otherwise sit blocked on `--smoke` runs.
     let no_console = args.no_console || smoke;
-    tracing::debug!(config_path = %args.config, "loading config");
-    let mut config = match Config::load(&args.config) {
+    tracing::debug!(config_override = ?args.config, "loading settings");
+    let mut config = match Config::load(args.config.as_deref()) {
         Ok(cfg) => cfg,
         Err(e) => {
             if smoke {
@@ -118,6 +128,25 @@ pub async fn run() -> Result<()> {
         "config resolved"
     );
 
+    match common::modules::enabled().and_then(|m| {
+        modules::init(&m);
+        command_permissions::init()?;
+        jail::init()
+    }) {
+        Ok(()) => {}
+        Err(e) => {
+            if smoke {
+                std::process::exit(common::smoke::smoke_fail(
+                    "Map",
+                    "config",
+                    &e.to_string(),
+                    common::smoke::EXIT_CONFIG,
+                ));
+            }
+            return Err(e);
+        }
+    }
+
     tracing::info!(db_path = %config.db_path().display(), "opening sqlite database");
     let db = match Database::open(config.db_path()).await {
         Ok(db) => Arc::new(db),
@@ -133,6 +162,10 @@ pub async fn run() -> Result<()> {
             return Err(e);
         }
     };
+    command_actors::init(
+        db.command_static_actors().await.unwrap_or_default(),
+        config.script_root(),
+    );
     match db.ping().await {
         Ok(()) => tracing::info!("DB connection ok"),
         Err(e) => {
@@ -264,6 +297,19 @@ pub async fn run() -> Result<()> {
             tracing::warn!(
                 error = %e,
                 "gamedata_recipes load failed: CraftCommand.lua will not find any recipes",
+            );
+        }
+    }
+    match db.get_guildleve_gamedata().await {
+        Ok(data) => {
+            let count = data.len();
+            lua.catalogs().install_guildleves(data);
+            tracing::info!(count, "gamedata_guildleves catalog loaded");
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "gamedata_guildleves load failed: battle leves unavailable",
             );
         }
     }
@@ -401,6 +447,15 @@ pub async fn run() -> Result<()> {
                 };
                 let spawned = ctx.spawn_all_actors().await;
                 tracing::info!(count = spawned.len(), "npc spawn pass complete");
+                let spawner = crate::processor::PacketProcessor {
+                    db: db.clone(),
+                    world: world.clone(),
+                    registry: registry.clone(),
+                    lua: Some(lua.clone()),
+                    cmd: Some(cmd.clone()),
+                };
+                let monsters = spawner.spawn_zone_load_battle_npcs().await;
+                tracing::info!(count = monsters, "zone-load battle npc spawn pass complete");
             }
             Err(e) => {
                 tracing::warn!(error = %e, "actor classes load failed; skipping spawn pass");

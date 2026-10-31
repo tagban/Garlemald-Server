@@ -1,0 +1,97 @@
+# XIVLegacy Server: who may use each chat command (typed in game as !command),
+# shipped defaults. Don't edit this file: put what you change in
+# settings/commands.toml (only what differs; see settings/README.md).
+#
+# GM levels, set per account with !setgm <level> <character name> (or from
+# the map server's console):
+#   0 player   1 helper   2 GM   3 senior GM   4 administrator
+#
+# A command not listed here needs administrator. Commands that aren't retail
+# behavior (free teleports, for example) default to GM; lower one to 0 to give
+# it to every player on your server.
+
+# The level needed to aim a command at someone else; below it, a command only
+# works on whoever typed it.
+target_others = 2
+
+[levels]
+# everyone
+help = 0
+who = 0
+version = 0
+# the bugreport module's !bug (modules/bugreport)
+bug = 0
+
+# GMs: moving players around, looking after them
+pos = 2
+endevent = 2
+zone = 2
+camp = 2
+warp = 2
+# entering a 1.0 dungeon in your own copy, until its queue NPCs are scripted
+dungeon = 2
+home = 2
+revive = 2
+speed = 2
+dismount = 2
+wake = 2
+goto = 2
+bring = 2
+send = 2
+return = 2
+up = 2
+down = 2
+posfix = 2
+getid = 2
+hasitem = 2
+haskeyitem = 2
+togglegm = 2
+gmgear = 2
+jail = 2
+pardon = 2
+setmusic = 2
+setweather = 2
+
+# senior GMs: changing what characters have, and what reaches everyone
+bringall = 3
+logoff = 3
+announce = 3
+additem = 3
+delitem = 3
+addkeyitem = 3
+delkeyitem = 3
+setgil = 3
+takegil = 3
+addquest = 3
+completequest = 3
+delquest = 3
+addtitle = 3
+addeffect = 3
+addallaetherytes = 3
+givegil = 3
+giveexp = 3
+sethome = 3
+joingc = 3
+setgcrank = 3
+addgcseals = 3
+accruerest = 3
+issuechocobo = 3
+rentchocobo = 3
+hireretainer = 3
+dismissretainer = 3
+listretainers = 3
+setsleeping = 3
+dream = 3
+spawn = 3
+despawn = 3
+sethp = 3
+die = 3
+# only while the finaldays module is enabled (modules/finaldays)
+worldend = 3
+
+# administrators: GM levels, scripts and quest debugging
+setgm = 4
+reload = 4
+talkto = 4
+pushtrigger = 4
+setseq = 4

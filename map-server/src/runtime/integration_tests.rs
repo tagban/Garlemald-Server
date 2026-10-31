@@ -49,7 +49,7 @@ fn tempdb() -> std::path::PathBuf {
         .unwrap()
         .as_nanos();
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("garlemald-integration-{nanos}-{seq}.db"))
+    common::test_tmp::dir().join(format!("garlemald-integration-{nanos}-{seq}.db"))
 }
 
 #[tokio::test]
@@ -2141,7 +2141,7 @@ async fn quest_set_enpc_emits_event_status_and_quest_graphic_packets() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let script_root = std::env::temp_dir().join(format!("garlemald-phase-e-{nanos}"));
+    let script_root = common::test_tmp::dir().join(format!("garlemald-phase-e-{nanos}"));
     std::fs::create_dir_all(script_root.join("quests/man")).unwrap();
     std::fs::write(
         script_root.join("quests/man/man0l0.lua"),
@@ -4448,7 +4448,7 @@ async fn command_actor_identity_threads_clicked_gather_node() {
     use crate::world_manager::GatherNodeMetadata;
     use std::collections::HashMap;
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-gather-cmd-identity-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -5668,7 +5668,7 @@ async fn logout_and_quitgame_bindings_emit_lua_commands() {
     use crate::lua::command::CommandQueue;
     use crate::lua::userdata::{LuaPlayer, PlayerSnapshot};
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-logout-bindings-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -7237,7 +7237,7 @@ async fn lua_director_end_guildleve_binding_pushes_command() {
     use crate::lua::command::CommandQueue;
     use crate::lua::userdata::LuaDirectorHandle;
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-end-guildleve-binding-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -7318,7 +7318,7 @@ async fn lua_director_remaining_leve_bindings_push_correct_commands() {
     use crate::lua::command::CommandQueue;
     use crate::lua::userdata::LuaDirectorHandle;
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-leve-bindings-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -7734,7 +7734,7 @@ async fn director_main_coroutine_wait_then_end_guildleve_drains_through_ticker()
     // time is 20+ seconds — test would timeout waiting for the
     // scheduler to advance. The synthetic script exercises the same
     // mechanics in a wait granularity the test can control.
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-director-main-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -7953,7 +7953,7 @@ async fn director_main_coroutine_without_wait_completes_on_first_slice() {
     use crate::lua::userdata::LuaDirectorHandle;
     use crate::lua::{LuaCommandKind as LuaCommand, LuaEngine};
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-director-nowait-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -8010,7 +8010,7 @@ async fn director_main_coroutine_missing_main_is_quiet_noop() {
     use crate::lua::command::CommandQueue;
     use crate::lua::userdata::LuaDirectorHandle;
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-director-nomain-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -9517,6 +9517,137 @@ async fn join_gc_sets_chara_state_and_db() {
     assert_eq!(post_rank, 17);
 }
 
+/// `JoinGC` drained on the runtime path — the one NPC scripts' commands
+/// take (the company officer enlists from its own `onEventStarted`). It
+/// used to fall through as unhandled, so the officer's induction played
+/// but never enlisted anyone.
+#[tokio::test]
+async fn join_gc_from_an_npc_script_enlists() {
+    use crate::actor::Character;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (89, 0, 0, 0, 'Recruit')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    registry
+        .insert(ActorHandle::new(
+            89,
+            ActorKindTag::Player,
+            232,
+            89,
+            Character::new(89),
+        ))
+        .await;
+
+    crate::runtime::quest_apply::apply_runtime_lua_commands(
+        vec![LuaCommand::JoinGC {
+            player_id: 89,
+            gc: crate::actor::gc::GC_MAELSTROM,
+        }],
+        &registry,
+        &db,
+        &world,
+        None,
+    )
+    .await;
+
+    let handle = registry.get(89).await.unwrap();
+    {
+        let c = handle.character.read().await;
+        assert_eq!(c.chara.gc_current, crate::actor::gc::GC_MAELSTROM);
+        assert_eq!(c.chara.gc_rank_limsa, crate::actor::gc::RANK_RECRUIT);
+    }
+    let gc: i64 = db
+        .conn_for_test()
+        .call_db(|c| {
+            c.query_row(r"SELECT gcCurrent FROM characters WHERE id = 89", [], |r| {
+                r.get::<_, i64>(0)
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(gc, crate::actor::gc::GC_MAELSTROM as i64);
+}
+
+/// `RemoveItem` drained on the runtime path: a quest that hands a key item
+/// over in an NPC talk (a delivery) takes it out of the player's key items.
+/// It used to fall through as unhandled, so delivered items stayed.
+#[tokio::test]
+async fn remove_item_from_a_quest_talk_takes_the_key_item() {
+    use crate::actor::Character;
+    use crate::lua::LuaCommandKind as LuaCommand;
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use common::db::ConnCallExt;
+    use std::sync::Arc;
+
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let db = Arc::new(
+        crate::database::Database::open(tempdb())
+            .await
+            .expect("db stub"),
+    );
+    db.conn_for_test()
+        .call_db(|c| {
+            c.execute(
+                r"INSERT INTO characters (id, userId, slot, serverId, name)
+                  VALUES (90, 0, 0, 0, 'Courier')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    registry
+        .insert(ActorHandle::new(
+            90,
+            ActorKindTag::Player,
+            145,
+            90,
+            Character::new(90),
+        ))
+        .await;
+    assert!(db.add_key_item(90, 11_000_259).await.unwrap());
+
+    crate::runtime::quest_apply::apply_runtime_lua_commands(
+        vec![LuaCommand::RemoveItem {
+            actor_id: 90,
+            item_package: 100,
+            catalog_id: 11_000_259,
+            quantity: 1,
+        }],
+        &registry,
+        &db,
+        &world,
+        None,
+    )
+    .await;
+
+    let rows = db.get_item_package(90, 100).await.unwrap();
+    assert!(
+        rows.iter().all(|r| r.item_id != 11_000_259),
+        "the delivered transceiver should be gone",
+    );
+}
+
 /// `apply_promote_gc` happy path: a Recruit (rank 127) enrolled in
 /// the Maelstrom with the seal balance for a Recruit→Pvt3 hop (100
 /// seals) gets promoted to rank 11, has 100 seals deducted, and
@@ -10122,7 +10253,7 @@ async fn promote_gc_refuses_at_story_rank_cap() {
 /// Tier-shift gate refusal: a Maelstrom Corporal (17) at the
 /// Sergeant promotion tier-shift can have all the seals in the world,
 /// but without the per-GC story quest "An Officer and a Wise Man"
-/// (111405) completed, `apply_promote_gc` refuses to bump them past
+/// (111428) completed, `apply_promote_gc` refuses to bump them past
 /// rank 17. Mirrors the in-game `eventTalkQuestUncomplete()` dialog
 /// the script's comment header at PopulaceCompanyOfficer.lua:20
 /// describes.
@@ -10170,7 +10301,7 @@ async fn promote_gc_refuses_at_sergeant_tier_shift_without_quest_completed() {
     let mut chara = Character::new(177);
     chara.chara.gc_current = crate::actor::gc::GC_MAELSTROM;
     chara.chara.gc_rank_limsa = 17;
-    // Quest journal is empty — the gate quest 111405 is NOT completed.
+    // Quest journal is empty — the gate quest 111428 is NOT completed.
     registry
         .insert(ActorHandle::new(177, ActorKindTag::Player, 200, 177, chara))
         .await;
@@ -10214,7 +10345,7 @@ async fn promote_gc_refuses_at_sergeant_tier_shift_without_quest_completed() {
 
 /// Tier-shift gate happy path: completing the gate quest unblocks
 /// the Sergeant promotion. Same setup as the refusal test above but
-/// with quest 111405 marked complete on the player's journal — the
+/// with quest 111428 marked complete on the player's journal — the
 /// promotion goes through, seals deducted, rank bumped to 21.
 #[tokio::test]
 async fn promote_gc_passes_sergeant_tier_shift_when_quest_completed() {
@@ -10258,9 +10389,9 @@ async fn promote_gc_passes_sergeant_tier_shift_when_quest_completed() {
     let mut chara = Character::new(178);
     chara.chara.gc_current = crate::actor::gc::GC_MAELSTROM;
     chara.chara.gc_rank_limsa = 17;
-    // Mark "An Officer and a Wise Man" (111405) complete on the
+    // Mark "The Weakest Link" (111428) complete on the
     // journal — that's the Maelstrom Sergeant gate.
-    chara.quest_journal.set_completed(111_405, true);
+    chara.quest_journal.set_completed(111_428, true);
     registry
         .insert(ActorHandle::new(178, ActorKindTag::Player, 200, 178, chara))
         .await;
@@ -10313,7 +10444,7 @@ async fn gc_promotion_helpers_drive_officer_logic_end_to_end() {
     use crate::lua::LuaEngine;
     use crate::lua::userdata::{LuaPlayer, PlayerSnapshot};
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-fc-helpers-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -12582,18 +12713,14 @@ async fn lua_player_add_guildleve_routes_regional_ids_to_accept() {
         r#"
         player:AddGuildleve(140001) -- battlecraft: routes to accept
         player:AddGuildleve(130450) -- fieldcraft upper bound: routes
-        player:AddGuildleve(50)     -- C# tradecraft id: no-op stub
+        player:AddGuildleve(10821)  -- battle leve: taken into a guildleve slot
         "#,
     )
     .exec()
     .unwrap();
 
     let cmds = CommandQueue::drain(&queue);
-    assert_eq!(
-        cmds.len(),
-        2,
-        "only the two regional-range ids emit a command; the tradecraft id is a stub"
-    );
+    assert_eq!(cmds.len(), 3);
     match &cmds[0] {
         LuaCommandKind::AcceptRegionalLeve {
             player_id,
@@ -12611,6 +12738,16 @@ async fn lua_player_add_guildleve_routes_regional_ids_to_accept() {
             assert_eq!(*leve_id, 130_450, "fieldcraft upper bound still routes");
         }
         other => panic!("expected AcceptRegionalLeve, got {other:?}"),
+    }
+    match &cmds[2] {
+        LuaCommandKind::AddGuildleve {
+            player_id,
+            guildleve_id,
+        } => {
+            assert_eq!(*player_id, 909);
+            assert_eq!(*guildleve_id, 10821);
+        }
+        other => panic!("expected AddGuildleve, got {other:?}"),
     }
 
     let _ = std::fs::remove_file(&probe);
@@ -13253,7 +13390,7 @@ async fn ticker_survives_tutorial_state_and_drains_time_parks() {
     // Script root with the real bare-yield helpers + a director that
     // parks on wait() — the same shape the live SEQ_005 director is in
     // right after the F-press signal resume.
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-ticker-liveness-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -13286,7 +13423,7 @@ async fn ticker_survives_tutorial_state_and_drains_time_parks() {
     let world = Arc::new(WorldManager::new());
     let registry = Arc::new(ActorRegistry::new());
     let db = Arc::new(
-        crate::database::Database::open(std::env::temp_dir().join(format!(
+        crate::database::Database::open(common::test_tmp::dir().join(format!(
                 "garlemald-ticker-liveness-{}.db",
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -13394,6 +13531,8 @@ async fn ticker_survives_tutorial_state_and_drains_time_parks() {
                 content_script: "SimpleContent30010".to_string(),
                 warp_complete: true,
                 spawned_actor_ids: Vec::new(),
+                instance_id: 0,
+                party_member: false,
             }),
             ..MapSession::default()
         })
@@ -13724,7 +13863,7 @@ async fn apply_content_finished_tears_down_content_state() {
 
     // Script root: a director parked on waitForSignal so the scheduler
     // holds a signal park owned by the player.
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-content-finished-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -13841,6 +13980,8 @@ async fn apply_content_finished_tears_down_content_state() {
             content_script: "SimpleContent30010".to_string(),
             warp_complete: true,
             spawned_actor_ids: vec![stoper_id],
+            instance_id: 0,
+            party_member: false,
         }),
         ..MapSession::default()
     };
@@ -13870,7 +14011,7 @@ async fn apply_content_finished_tears_down_content_state() {
     assert!(result.error.is_none(), "{:?}", result.error);
     assert_eq!(lua.scheduler().lock().unwrap().pending_signal_count(), 1);
 
-    crate::runtime::quest_apply::apply_content_finished(166, "", &registry, &world, Some(&lua))
+    crate::runtime::quest_apply::apply_content_finished(166, "", 0, &registry, &world, Some(&lua))
         .await;
 
     // Content NPCs gone from the registry; the player survives.
@@ -13929,7 +14070,7 @@ async fn content_on_update_send_signal_resumes_parked_coroutine() {
     use crate::data::Session as MapSession;
     use crate::runtime::ticker::{GameTicker, TickerConfig};
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-onupdate-signal-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -14025,6 +14166,8 @@ async fn content_on_update_send_signal_resumes_parked_coroutine() {
                 content_script: "SignalContent".to_string(),
                 warp_complete: true,
                 spawned_actor_ids: Vec::new(),
+                instance_id: 0,
+                party_member: false,
             }),
             ..MapSession::default()
         })
@@ -14258,6 +14401,8 @@ async fn s2_5_content_onupdate_engages_roster_and_reengages_on_death() {
             content_script: "SimpleContent30010".to_string(),
             warp_complete: true,
             spawned_actor_ids: Vec::new(),
+            instance_id: 0,
+            party_member: false,
         }),
         ..MapSession::default()
     };
@@ -14977,6 +15122,35 @@ async fn set_target_auto_attack_gated_on_active_mode() {
     }
 }
 
+/// A townsperson or quest giver (`Npc`) is never an auto-attack target,
+/// even with the weapon drawn: players could hit quest NPCs (Hihine took
+/// 58 and 99 damage in a live test).
+#[tokio::test]
+async fn set_target_auto_attack_ignores_townspeople() {
+    let scene = sheathe_scene().await;
+    let mut hihine = Character::new(3);
+    hihine.chara.hp = 100;
+    hihine.chara.max_hp = 100;
+    scene
+        .registry
+        .insert(ActorHandle::new(3, ActorKindTag::Npc, 100, 0, hihine))
+        .await;
+    let handle = scene.registry.get(1).await.expect("player handle");
+    {
+        let mut c = handle.character.write().await;
+        c.base.current_main_state = crate::actor::MAIN_STATE_ACTIVE;
+    }
+    scene.processor.apply_player_set_target(42, 3, true).await;
+    {
+        let c = handle.character.read().await;
+        assert!(
+            !c.ai_container.is_engaged(),
+            "an Npc must not be engaged by the basic attack",
+        );
+        assert_eq!(c.chara.current_target, 3, "the soft target still lands");
+    }
+}
+
 /// #46 — script-driven engagement bypasses the 0x00CD stance gate:
 /// `ActorEngage` (SEQ_005 tutorial wolves / escort allies via
 /// `apply_actor_engage`) must keep engaging a PASSIVE actor.
@@ -15039,7 +15213,7 @@ struct KillGateScene {
 async fn kill_gate_scene() -> KillGateScene {
     use crate::data::Session as MapSession;
 
-    let root = std::env::temp_dir().join(format!(
+    let root = common::test_tmp::dir().join(format!(
         "garlemald-killgate-{}-{:?}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -15166,6 +15340,8 @@ async fn kill_gate_scene() -> KillGateScene {
             content_script: "SimpleContent30010".to_string(),
             warp_complete: true,
             spawned_actor_ids: Vec::new(),
+            instance_id: 0,
+            party_member: false,
         }),
         ..MapSession::default()
     };
@@ -15540,6 +15716,8 @@ async fn s4_2_real_director_full_sequence_kill_gate_to_warp() {
             content_script: "SimpleContent30010".to_string(),
             warp_complete: true,
             spawned_actor_ids: Vec::new(),
+            instance_id: 0,
+            party_member: false,
         }),
         ..MapSession::default()
     };
@@ -16516,6 +16694,8 @@ async fn send_instance_update_streams_content_instance_battlenpc() {
         content_script: "SimpleContentMan0l101".to_string(),
         warp_complete: true,
         spawned_actor_ids: vec![MOB_ID],
+        instance_id: 0,
+        party_member: false,
     });
     session.content_warp_acked = true;
     world.upsert_session(session).await;
@@ -16721,6 +16901,8 @@ async fn send_instance_update_streams_nothing_before_content_warp_ack() {
         content_script: "SimpleContentMan0l101".to_string(),
         warp_complete: true,
         spawned_actor_ids: vec![MOB_ID],
+        instance_id: 0,
+        party_member: false,
     });
     session.content_warp_acked = false; // client still on "Now loading…"
     world.upsert_session(session).await;
@@ -17776,4 +17958,103 @@ async fn send_message_runtime_applier_emits_0x0003_to_self() {
         "SendMessage rides opcode 0x0003",
     );
     assert_eq!(&subs[0].data[0x24..0x24 + 12], b"runtime line", "text body");
+}
+
+/// Open-world monsters the client has are removed (0x00CB to this client)
+/// once they are past MONSTER_DESPAWN_RADIUS; populace stays add-only.
+#[tokio::test]
+async fn send_instance_update_removes_far_monsters_only() {
+    use crate::actor::Character;
+    use crate::data::{ClientHandle, Session as MapSession};
+    use crate::runtime::actor_registry::{ActorHandle, ActorKindTag};
+    use crate::zone::area::{ActorKind, StoredActor};
+    use crate::zone::outbox::AreaOutbox;
+    use crate::zone::zone::Zone;
+    use common::Vector3;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    const MOB: u32 = 0x44B2_0001;
+    const NPC: u32 = 0x44B0_0005;
+    let world = Arc::new(WorldManager::new());
+    let registry = Arc::new(ActorRegistry::new());
+    let zone = Zone::new(
+        150,
+        "fst0Field01".to_string(),
+        103,
+        String::new(),
+        0,
+        0,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+    );
+    world.register_zone(zone).await;
+    let zone_arc = world.zone(150).await.unwrap();
+    let mut player = Character::new(1);
+    player.base.zone_id = 150;
+    registry
+        .insert(ActorHandle::new(1, ActorKindTag::Player, 150, 1, player))
+        .await;
+    for (id, tag) in [(MOB, ActorKindTag::BattleNpc), (NPC, ActorKindTag::Npc)] {
+        let mut c = Character::new(id);
+        c.base.zone_id = 150;
+        registry.insert(ActorHandle::new(id, tag, 150, 0, c)).await;
+    }
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
+    world.register_client(1, ClientHandle::new(1, tx)).await;
+    let mut session = MapSession::new(1);
+    session.current_zone_id = 150;
+    // The client already has both (they were streamed in earlier).
+    session.actor_instance_list.insert(MOB);
+    session.actor_instance_list.insert(NPC);
+    world.upsert_session(session).await;
+    {
+        let mut z = zone_arc.write().await;
+        let mut out = AreaOutbox::new();
+        for (id, kind, x) in [
+            (1, ActorKind::Player, 0.0),
+            (MOB, ActorKind::BattleNpc, 200.0),
+            (NPC, ActorKind::Npc, 200.0),
+        ] {
+            z.core.add_actor(
+                StoredActor {
+                    actor_id: id,
+                    kind,
+                    position: Vector3::new(x, 0.0, 0.0),
+                    grid: (0, 0),
+                    is_alive: true,
+                },
+                &mut out,
+            );
+            z.core
+                .update_actor_position(id, Vector3::new(x, 0.0, 0.0), &mut out);
+        }
+    }
+
+    world.send_instance_update(&registry, None, 1, 1).await;
+
+    let mut removed = Vec::new();
+    while let Ok(bytes) = rx.try_recv() {
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let Ok(sub) = common::subpacket::SubPacket::parse(&bytes, &mut offset) else {
+                break;
+            };
+            if sub.game_message.opcode == crate::packets::opcodes::OP_REMOVE_ACTOR {
+                removed.push(sub.header.source_id);
+            }
+        }
+    }
+    assert_eq!(removed, vec![MOB], "only the far monster is removed");
+    let s = world.session(1).await.unwrap();
+    assert!(!s.actor_instance_list.contains(&MOB));
+    assert!(
+        s.actor_instance_list.contains(&NPC),
+        "populace stays add-only"
+    );
 }

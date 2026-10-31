@@ -30,11 +30,11 @@ function createLinkshell(player, name, crest)
 end
 
 function modifyLinkshell(player, name, crest)
-	
+	GetWorldManager():RequestWorldLinkshellCrestModify(player, name, crest);
 end
 
 function disbandLinkshell(player, name, crest)
-	
+	GetWorldManager():RequestWorldLinkshellDelete(player, name);
 end
 
 function onEventStarted(player, npc, triggerName)

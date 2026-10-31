@@ -210,6 +210,12 @@ pub struct CharaState {
     /// initClassItems/initRaceItems starter kit each time.
     /// (Garlemald-Server #46.)
     pub play_time: u32,
+    /// Gil on hand (the `1_000_001` stack in the currency package),
+    /// mirrored from the DB at session-begin, refreshed on every inbound
+    /// EventStart and after `AddGil`, so `player:GetCurrentGil()` in NPC
+    /// scripts (chocobo rental's 800-gil check, shops) sees the real total
+    /// instead of the snapshot's former hardcoded 0.
+    pub gil: i32,
     /// UNIX timestamp (seconds) of the last `rest_bonus_exp_rate`
     /// increment from the inn auto-accrual tick. `0` means "no
     /// accrual window open" — the next inn-zone tick will set this
@@ -387,6 +393,7 @@ impl Default for CharaState {
             initial_town: 0,
             rest_bonus_exp_rate: 0,
             play_time: 0,
+            gil: 0,
             last_rest_accrual_utc: 0,
             time_of_death_utc: 0,
             respawn_disabled: false,
@@ -468,6 +475,15 @@ impl CharaState {
     }
 }
 
+/// Stat bonuses from food or medicine, applied by the stat recalc while
+/// `status_id` is on the character.
+#[derive(Debug, Clone)]
+pub struct FoodBuff {
+    pub status_id: u32,
+    /// (modifier id, percent, cap; 0 = no cap)
+    pub bonuses: Vec<(u32, i32, i32)>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Character {
     pub base: BaseActor,
@@ -497,9 +513,28 @@ pub struct Character {
     /// would just double the write-path bookkeeping. Only Players ever
     /// populate it; NPCs/BattleNpcs carry the default empty journal.
     pub quest_journal: crate::actor::quest::QuestJournal,
+    /// Quests this player can take, by the class id of the NPC who offers
+    /// them: `(quest id, the giver's marker)`. Players only; see
+    /// `processor/quest_offers.rs`.
+    pub quest_offers: std::collections::HashMap<u32, (u32, crate::actor::quest::QuestEnpc)>,
+    /// The food or medicine buff riding the Well Fed status
+    /// (`processor/items.rs`); the stat recalc applies it while it lasts.
+    pub food: Option<FoodBuff>,
 }
 
 impl Character {
+    /// Classes of the NPCs the player's quests answer for: the givers of
+    /// quests on offer and the NPCs taken quests have marked.
+    pub fn quest_npc_classes(&self) -> Vec<u32> {
+        let mut classes: Vec<u32> = self.quest_offers.keys().copied().collect();
+        for q in self.quest_journal.slots.iter().flatten() {
+            classes.extend(q.state.current.keys().copied());
+        }
+        classes.sort_unstable();
+        classes.dedup();
+        classes
+    }
+
     pub fn new(actor_id: u32) -> Self {
         Self {
             base: BaseActor::new(actor_id),
@@ -514,6 +549,8 @@ impl Character {
             battle_save: crate::battle::BattleSave::default(),
             event_session: crate::event::EventSession::default(),
             quest_journal: crate::actor::quest::QuestJournal::default(),
+            quest_offers: Default::default(),
+            food: None,
         }
     }
 }
