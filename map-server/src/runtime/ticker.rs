@@ -381,6 +381,10 @@ impl GameTicker {
                 let Some(active) = session.active_content_script.clone() else {
                     continue;
                 };
+                // One driver per copy: the owner's session runs it.
+                if active.party_member {
+                    continue;
+                }
                 // Park the content driver until the client has finished
                 // loading into the instance (it echoed its post-warp zone-in,
                 // setting `content_warp_acked`). Driving the escort/combat
@@ -408,6 +412,8 @@ impl GameTicker {
                     area_class_path: active.area_class_path.clone(),
                     director_name: active.director_name.clone(),
                     director_actor_id: active.director_actor_id,
+                    instance_id: active.instance_id,
+                    slot: crate::content_instance::get(active.instance_id).map_or(0, |i| i.slot),
                     queue: placeholder_queue,
                     players: players_vec,
                     allies: allies_vec,
@@ -1523,6 +1529,8 @@ mod tests {
             content_script: "SimpleContent30010".to_string(),
             warp_complete: true,
             spawned_actor_ids: Vec::new(),
+            instance_id: 0,
+            party_member: false,
         };
 
         let (players, allies, monsters) = super::build_content_rosters(

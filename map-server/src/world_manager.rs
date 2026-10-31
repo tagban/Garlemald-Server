@@ -1728,6 +1728,7 @@ impl WorldManager {
                 let mut z = zone_arc.write().await;
                 let mut ob = crate::zone::outbox::AreaOutbox::new();
                 z.core.remove_actor(actor_id, &mut ob);
+                z.core.set_instance(actor_id, 0);
                 if let Some(name) = &session.current_private_area_name
                     && let Some(pa) = z
                         .private_areas
@@ -1950,6 +1951,9 @@ impl WorldManager {
                     &mut ob,
                 );
             }
+            // Out of any content copy; `DoZoneChangeContent` re-tags its
+            // player after this.
+            dest.core.set_instance(actor_id, 0);
 
             // 5. Update session's private-area routing. `Some` only
             //    if we actually attached to a private area (so the
@@ -4193,11 +4197,10 @@ impl WorldManager {
                 .map(|a| a.actor_id)
                 .filter(|id| !session.actor_instance_list.contains(id))
                 .collect();
-            // Other players in range the client hasn't spawned yet (not
-            // inside content instances, which are per-party copies).
-            let players: Vec<u32> = if in_content_instance {
-                Vec::new()
-            } else {
+            // Other players in range the client hasn't spawned yet. The
+            // range query only pairs actors of one content copy, so inside
+            // a copy these are the party members who entered with you.
+            let players: Vec<u32> = {
                 z.core
                     .actors_around(actor_id, INSTANCE_STREAM_RADIUS)
                     .into_iter()
@@ -4224,6 +4227,8 @@ impl WorldManager {
                         let (dx, dz) = (a.position.x - c.x, a.position.z - c.z);
                         !matches!(a.kind, crate::zone::area::ActorKind::Player)
                             || dx * dx + dz * dz > MONSTER_DESPAWN_RADIUS * MONSTER_DESPAWN_RADIUS
+                            // went into (or out of) a content copy
+                            || z.core.instance_of(*id) != z.core.instance_of(actor_id)
                     }
                     (Some(_), None) => false,
                     (None, _) => true,

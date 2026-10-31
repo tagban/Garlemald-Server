@@ -2522,6 +2522,8 @@ mod tests {
             area_class_path: "/Area/PrivateArea/Content/PrivateAreaMasterSimpleContent".to_string(),
             director_name: "Quest/QuestDirectorMan0g001".to_string(),
             director_actor_id: 0x6608_0001,
+            instance_id: 0,
+            slot: 0,
             queue,
             players: Vec::new(),
             allies: Vec::new(),
