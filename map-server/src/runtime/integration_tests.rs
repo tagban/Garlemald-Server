@@ -13531,6 +13531,8 @@ async fn ticker_survives_tutorial_state_and_drains_time_parks() {
                 content_script: "SimpleContent30010".to_string(),
                 warp_complete: true,
                 spawned_actor_ids: Vec::new(),
+                instance_id: 0,
+                party_member: false,
             }),
             ..MapSession::default()
         })
@@ -13978,6 +13980,8 @@ async fn apply_content_finished_tears_down_content_state() {
             content_script: "SimpleContent30010".to_string(),
             warp_complete: true,
             spawned_actor_ids: vec![stoper_id],
+            instance_id: 0,
+            party_member: false,
         }),
         ..MapSession::default()
     };
@@ -14007,7 +14011,7 @@ async fn apply_content_finished_tears_down_content_state() {
     assert!(result.error.is_none(), "{:?}", result.error);
     assert_eq!(lua.scheduler().lock().unwrap().pending_signal_count(), 1);
 
-    crate::runtime::quest_apply::apply_content_finished(166, "", &registry, &world, Some(&lua))
+    crate::runtime::quest_apply::apply_content_finished(166, "", 0, &registry, &world, Some(&lua))
         .await;
 
     // Content NPCs gone from the registry; the player survives.
@@ -14162,6 +14166,8 @@ async fn content_on_update_send_signal_resumes_parked_coroutine() {
                 content_script: "SignalContent".to_string(),
                 warp_complete: true,
                 spawned_actor_ids: Vec::new(),
+                instance_id: 0,
+                party_member: false,
             }),
             ..MapSession::default()
         })
@@ -14395,6 +14401,8 @@ async fn s2_5_content_onupdate_engages_roster_and_reengages_on_death() {
             content_script: "SimpleContent30010".to_string(),
             warp_complete: true,
             spawned_actor_ids: Vec::new(),
+            instance_id: 0,
+            party_member: false,
         }),
         ..MapSession::default()
     };
@@ -15332,6 +15340,8 @@ async fn kill_gate_scene() -> KillGateScene {
             content_script: "SimpleContent30010".to_string(),
             warp_complete: true,
             spawned_actor_ids: Vec::new(),
+            instance_id: 0,
+            party_member: false,
         }),
         ..MapSession::default()
     };
@@ -15706,6 +15716,8 @@ async fn s4_2_real_director_full_sequence_kill_gate_to_warp() {
             content_script: "SimpleContent30010".to_string(),
             warp_complete: true,
             spawned_actor_ids: Vec::new(),
+            instance_id: 0,
+            party_member: false,
         }),
         ..MapSession::default()
     };
@@ -16682,6 +16694,8 @@ async fn send_instance_update_streams_content_instance_battlenpc() {
         content_script: "SimpleContentMan0l101".to_string(),
         warp_complete: true,
         spawned_actor_ids: vec![MOB_ID],
+        instance_id: 0,
+        party_member: false,
     });
     session.content_warp_acked = true;
     world.upsert_session(session).await;
@@ -16887,6 +16901,8 @@ async fn send_instance_update_streams_nothing_before_content_warp_ack() {
         content_script: "SimpleContentMan0l101".to_string(),
         warp_complete: true,
         spawned_actor_ids: vec![MOB_ID],
+        instance_id: 0,
+        party_member: false,
     });
     session.content_warp_acked = false; // client still on "Now loading…"
     world.upsert_session(session).await;

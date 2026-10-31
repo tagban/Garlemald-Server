@@ -2983,6 +2983,18 @@ impl UserData for LuaPlayer {
             Ok(Value::UserData(ud))
         });
         methods.add_method("GetGuildleveDirector", |_, _this, _: ()| Ok(Value::Nil));
+        // `player:LeaveContent()` — walk out of the player's content copy:
+        // the copy goes on with their party, or ends with the last one out.
+        // Warp the player out after it.
+        methods.add_method("LeaveContent", |_, this, _: ()| {
+            push(
+                &this.queue,
+                LuaCommand::LeaveContent {
+                    player_id: this.snapshot.actor_id,
+                },
+            );
+            Ok(())
+        });
         methods.add_method("SetLoginDirector", |_, this, director: Value| {
             // Extract director identity from the userdata. Beyond the
             // actor_id (used for ScriptBind LuaParams), we ALSO pull
@@ -3617,6 +3629,7 @@ impl UserData for LuaZone {
                         z,
                         rotation: rotation.unwrap_or(0.0),
                         expected_actor_id,
+                        instance_id: 0,
                     },
                 );
                 let actor = LuaActor {
@@ -3686,9 +3699,21 @@ impl UserData for LuaZone {
                     Some(z) if z != 0 => z,
                     _ => this.snapshot.zone_id,
                 };
+                // Each run is its own copy: a party's or a solo player's.
+                // Its slot keeps its director, area master and spawns from
+                // colliding with another copy running in the same zone.
+                let instance = crate::content_instance::allocate(parent_zone_id);
+                if instance.is_none() {
+                    tracing::warn!(
+                        zone = parent_zone_id,
+                        area = %area_name,
+                        "CreateContentArea: every content slot in the zone is taken",
+                    );
+                }
+                let (instance_id, slot) = instance.map(|i| (i.id, i.slot)).unwrap_or((0, 0));
                 let director_actor_id = crate::director::director::encode_director_actor_id(
                     parent_zone_id,
-                    /* director_local_id */ 1,
+                    crate::content_instance::director_local_id(slot),
                 );
                 // Content area gets its own actor id sharing the
                 // director's encoding. The encoded local-id field is
@@ -3701,8 +3726,10 @@ impl UserData for LuaZone {
                 // (0x40000) that survives the mask and won't collide
                 // with normal sequential directors. Synthetic but
                 // stable across calls.
-                let content_area_actor_id =
-                    crate::director::director::encode_director_actor_id(parent_zone_id, 0x40000);
+                let content_area_actor_id = crate::director::director::encode_director_actor_id(
+                    parent_zone_id,
+                    crate::content_instance::area_master_local_id(slot),
+                );
                 // Extract the player's actor id from the first arg so
                 // the runtime handler can look up the player snapshot
                 // and fire the content script's `onCreate` hook
@@ -3727,6 +3754,7 @@ impl UserData for LuaZone {
                         director_name: director_name.clone(),
                         director_actor_id,
                         content_area_actor_id,
+                        instance_id,
                     },
                 );
                 let handle = LuaContentArea {
@@ -3735,6 +3763,8 @@ impl UserData for LuaZone {
                     area_class_path,
                     director_name: director_name.clone(),
                     director_actor_id,
+                    instance_id,
+                    slot,
                     queue: this.queue.clone(),
                     // C2b — the runtime DoZoneChangeContent path
                     // (`apply_do_zone_change_content`) re-creates a
@@ -3775,6 +3805,7 @@ impl UserData for LuaZone {
                 LuaCommand::ContentFinished {
                     parent_zone_id: this.snapshot.zone_id,
                     area_name: String::new(),
+                    instance_id: 0,
                 },
             );
             Ok(())
@@ -3902,6 +3933,10 @@ pub struct LuaContentArea {
     pub area_class_path: String,
     pub director_name: String,
     pub director_actor_id: u32,
+    /// The copy this handle drives (`crate::content_instance`): its id
+    /// tags the copy's actors, its slot numbers them. 0/0 = none.
+    pub instance_id: u32,
+    pub slot: u32,
     pub queue: Arc<Mutex<CommandQueue>>,
     /// Phase C2b — pre-built roster snapshots so `area:GetPlayers()`
     /// / `area:GetAllies()` / `area:GetMonsters()` can yield real
@@ -3961,7 +3996,8 @@ impl UserData for LuaContentArea {
                 // id. The pmeteor `+5` quirk is reproduced inside
                 // `apply_spawn_actor` to keep the id formula one-place.
                 let suffix = (common::utils::murmur_hash2(&unique_id, 0) & 0xFFF) as u32;
-                let actor_number = 0x60000u32 | suffix;
+                let actor_number =
+                    crate::content_instance::spawn_actor_number(this.slot, 0x60000u32 | suffix);
                 let expected_actor_id =
                     (4u32 << 28) | (zone_id << 19) | ((actor_number + 5) & 0x7FFFF);
                 push(
@@ -3975,6 +4011,7 @@ impl UserData for LuaContentArea {
                         z,
                         rotation: rotation.unwrap_or(0.0),
                         expected_actor_id,
+                        instance_id: this.instance_id,
                     },
                 );
                 let actor = LuaActor {
@@ -4076,6 +4113,7 @@ impl UserData for LuaContentArea {
                 LuaCommand::ContentFinished {
                     parent_zone_id: this.parent_zone_id,
                     area_name: this.area_name.clone(),
+                    instance_id: this.instance_id,
                 },
             );
             Ok(())
@@ -4185,6 +4223,54 @@ impl UserData for LuaWorldManager {
                         y,
                         z,
                         rotation,
+                        instance_id: area.instance_id,
+                        with_party: false,
+                    },
+                );
+                Ok(())
+            },
+        );
+
+        // `GetWorldManager():DoZoneChangeContentParty(player, contentArea, x, y,
+        // z, rot, spawnType)` — `DoZoneChangeContent` for a party: the
+        // player's party members in the same zone enter the same copy
+        // (dungeons). Quest duties keep using the solo call.
+        methods.add_method(
+            "DoZoneChangeContentParty",
+            |_,
+             this,
+             (player, content_area, x, y, z, rotation, spawn_type): (
+                mlua::AnyUserData,
+                mlua::AnyUserData,
+                f32,
+                f32,
+                f32,
+                f32,
+                Option<u8>,
+            )| {
+                // Same fix shape as commit c8c549d's DoZoneChange:
+                // `player` is a LuaPlayer userdata in scripts (the
+                // Lua call shape is `WM:DoZoneChangeContent(player,
+                // contentArea, x, y, z, rot, spawnType)`); typing it
+                // as u32 produced "error converting Lua userdata to
+                // u32" at runtime. Extract actor_id via the LuaPlayer
+                // borrow.
+                let p = player.borrow::<LuaPlayer>()?;
+                let area = content_area.borrow::<LuaContentArea>()?;
+                push(
+                    &this.queue,
+                    LuaCommand::DoZoneChangeContent {
+                        player_id: p.snapshot.actor_id,
+                        parent_zone_id: area.parent_zone_id,
+                        area_name: area.area_name.clone(),
+                        director_actor_id: area.director_actor_id,
+                        spawn_type: spawn_type.unwrap_or(16),
+                        x,
+                        y,
+                        z,
+                        rotation,
+                        instance_id: area.instance_id,
+                        with_party: true,
                     },
                 );
                 Ok(())
@@ -4228,12 +4314,14 @@ impl UserData for LuaWorldManager {
                 Option<u32>,
                 Option<String>,
             )| {
-                let (parent_zone_id, area_name, queue) = {
+                let (parent_zone_id, area_name, queue, instance_id, slot) = {
                     let area = content_area.borrow::<LuaContentArea>()?;
                     (
                         area.parent_zone_id,
                         area.area_name.clone(),
                         area.queue.clone(),
+                        area.instance_id,
+                        area.slot,
                     )
                 };
                 // Standard NPC actor-id formula. Using `0x40000 | id`
@@ -4241,7 +4329,15 @@ impl UserData for LuaWorldManager {
                 // the per-zone actor-number space (sequential
                 // allocations start at 1) — collision-free for any
                 // realistic zone.
-                let actor_number = 0x40000u32 | (id & 0x3FFFF);
+                // The copy's slot sits above the battle npc id, so two copies
+                // of one content never share an actor id.
+                if id > crate::content_instance::MAX_CONTENT_BNPC_ID {
+                    tracing::warn!(
+                        bnpc_id = id,
+                        "SpawnBattleNpcById: content bnpc ids must fit in 12 bits"
+                    );
+                }
+                let actor_number = crate::content_instance::bnpc_actor_number(slot, id);
                 let expected_actor_id =
                     (4u32 << 28) | (parent_zone_id << 19) | (actor_number & 0x7FFFF);
                 push(
@@ -4252,6 +4348,7 @@ impl UserData for LuaWorldManager {
                         expected_actor_id,
                         appearance_class_id: appearance_class_id.filter(|&c| c != 0),
                         display_name: display_name.filter(|n| !n.is_empty()),
+                        instance_id,
                     },
                 );
                 tracing::debug!(

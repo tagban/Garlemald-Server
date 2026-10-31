@@ -180,6 +180,8 @@ pub enum LuaCommand {
         /// `actor:SetMod(...)` calls in the same drain target the
         /// right actor.
         expected_actor_id: u32,
+        /// Content instance (`crate::content_instance`) this belongs to; 0 = none.
+        instance_id: u32,
     },
     /// `director:AddMember(actor)` — port of C#
     /// `Director::AddMember`. Appends `member_actor_id` to the
@@ -296,6 +298,8 @@ pub enum LuaCommand {
         /// (`SNPC_START - 1 + skin`) and nickname.
         appearance_class_id: Option<u32>,
         display_name: Option<String>,
+        /// Content instance (`crate::content_instance`) this belongs to; 0 = none.
+        instance_id: u32,
     },
     DespawnActor {
         zone_id: u32,
@@ -967,6 +971,8 @@ pub enum LuaCommand {
         director_name: String,
         director_actor_id: u32,
         content_area_actor_id: u32,
+        /// Content instance (`crate::content_instance`) this belongs to; 0 = none.
+        instance_id: u32,
     },
     /// `GetWorldManager():DoZoneChangeContent(player, contentArea, x, y,
     /// z, rot, spawnType)` — port of C#
@@ -985,6 +991,16 @@ pub enum LuaCommand {
         y: f32,
         z: f32,
         rotation: f32,
+        /// Content instance (`crate::content_instance`) this belongs to; 0 = none.
+        instance_id: u32,
+        /// `DoZoneChangeContentParty`: the player's party members in the
+        /// same zone enter the copy with them.
+        with_party: bool,
+    },
+    /// `player:LeaveContent()` — the player walks out of their content
+    /// copy (`quest_apply::apply_leave_content`); warp them out after.
+    LeaveContent {
+        player_id: u32,
     },
     /// `area:ContentFinished()` — flag the content area for cleanup
     /// once the last player exits. The combat tutorial calls this after
@@ -992,6 +1008,8 @@ pub enum LuaCommand {
     ContentFinished {
         parent_zone_id: u32,
         area_name: String,
+        /// Content instance (`crate::content_instance`) this belongs to; 0 = none.
+        instance_id: u32,
     },
     /// `player:SpawnMyRetainer(bell, retainerIndex)` — retail
     /// "summon retainer at a bell" path. Resolves `retainer_index`

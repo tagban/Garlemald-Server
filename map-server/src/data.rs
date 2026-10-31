@@ -274,6 +274,12 @@ pub struct ActiveContentScript {
     /// never `AddMember`'d (SEQ_005's `openingstoper` event trigger).
     /// (#28 S1.3.)
     pub spawned_actor_ids: Vec<u32>,
+    /// The copy this session is in (`crate::content_instance`); its actors
+    /// and players carry it as their zone-core instance tag. 0 = none.
+    pub instance_id: u32,
+    /// A party member who entered someone else's copy: the content's hooks
+    /// (`onUpdate`, the teardown) run on the owner's session only.
+    pub party_member: bool,
 }
 
 /// Runtime-only snapshot of an in-world retainer. Holds the minimal

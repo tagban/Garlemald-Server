@@ -3643,6 +3643,8 @@ mod battle_exp_award_tests {
             content_script: script.into(),
             warp_complete: true,
             spawned_actor_ids: Vec::new(),
+            instance_id: 0,
+            party_member: false,
         });
         session
     }

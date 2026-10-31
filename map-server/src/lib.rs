@@ -43,6 +43,7 @@ mod command_actors;
 mod command_permissions;
 mod command_processor;
 mod config;
+mod content_instance;
 mod crafting;
 mod data;
 mod database;

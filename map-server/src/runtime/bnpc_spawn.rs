@@ -38,6 +38,7 @@ pub(crate) async fn spawn_battle_npc(
         gm,
         None,
         None,
+        0,
         db,
         world,
         registry,
@@ -49,6 +50,8 @@ pub(crate) async fn spawn_battle_npc(
 /// [`spawn_battle_npc`] wearing another class's look (`appearance_class_id`,
 /// from `gamedata_actor_appearance`) and/or a custom name: an escort's Path
 /// companion is the player's own companion, not a fixed pool class.
+/// `instance_id` is the content copy the spawn belongs to (0 = none): it
+/// tags the actor in the zone core and picks the owning session.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn spawn_battle_npc_as(
     bnpc_id: u32,
@@ -57,6 +60,7 @@ pub(crate) async fn spawn_battle_npc_as(
     gm: Option<Option<String>>,
     appearance_class_id: Option<u32>,
     display_name: Option<String>,
+    instance_id: u32,
     db: &Database,
     world: &WorldManager,
     registry: &ActorRegistry,
@@ -239,6 +243,7 @@ pub(crate) async fn spawn_battle_npc_as(
             },
             &mut ob,
         );
+        zone.core.set_instance(actor_id, instance_id);
         // Project into the correct spatial-grid cell. `add_actor` stores
         // grid (0,0); `actors_around` / `broadcast_around_actor` read the
         // grid cell, not the raw position — so without this the NPC sits in
@@ -261,8 +266,12 @@ pub(crate) async fn spawn_battle_npc_as(
     let content_spawn = gm.is_some() || {
         let mut found = false;
         for mut snap in world.all_sessions().await {
+            // A copy's spawn belongs to that copy's owner; an untagged one
+            // (quest content before instancing) to the zone's first.
             if let Some(active) = snap.active_content_script.as_mut()
                 && active.parent_zone_id == parent_zone_id
+                && (instance_id == 0 || active.instance_id == instance_id)
+                && !active.party_member
             {
                 // #28 S1.3 — record the spawn on the owning content so
                 // the ContentFinished teardown despawns actors the

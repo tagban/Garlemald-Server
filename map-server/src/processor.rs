@@ -685,6 +685,16 @@ impl PacketProcessor {
             }
         }
         crate::gm_tags::set(session_id, false);
+        // Out of any content copy: the copy goes on with its party, or ends.
+        if let Some(handle) = self.registry.by_session(session_id).await {
+            crate::runtime::quest_apply::apply_leave_content(
+                handle.actor_id,
+                &self.registry,
+                &self.world,
+                self.lua.as_ref(),
+            )
+            .await;
+        }
         if let Some(handle) = self.registry.by_session(session_id).await {
             self.world.detach_player(handle.actor_id, session_id).await;
             crate::parties::on_logout(&self.registry, &self.world, &self.db, handle.actor_id).await;
@@ -2234,6 +2244,7 @@ impl PacketProcessor {
                 director_name,
                 director_actor_id,
                 content_area_actor_id,
+                instance_id,
             } => {
                 self.apply_create_content_area(
                     player_id,
@@ -2244,6 +2255,7 @@ impl PacketProcessor {
                     director_name,
                     director_actor_id,
                     content_area_actor_id,
+                    instance_id,
                 )
                 .await;
             }
@@ -2257,6 +2269,8 @@ impl PacketProcessor {
                 y,
                 z,
                 rotation,
+                instance_id,
+                with_party,
             } => {
                 self.apply_do_zone_change_content(
                     player_id,
@@ -2268,16 +2282,29 @@ impl PacketProcessor {
                     y,
                     z,
                     rotation,
+                    instance_id,
+                    with_party,
+                )
+                .await;
+            }
+            LC::LeaveContent { player_id } => {
+                crate::runtime::quest_apply::apply_leave_content(
+                    player_id,
+                    &self.registry,
+                    &self.world,
+                    self.lua.as_ref(),
                 )
                 .await;
             }
             LC::ContentFinished {
                 parent_zone_id,
                 area_name,
+                instance_id,
             } => {
                 crate::runtime::quest_apply::apply_content_finished(
                     parent_zone_id,
                     &area_name,
+                    instance_id,
                     &self.registry,
                     &self.world,
                     self.lua.as_ref(),
@@ -2412,6 +2439,7 @@ impl PacketProcessor {
         director_name: String,
         director_actor_id: u32,
         content_area_actor_id: u32,
+        instance_id: u32,
     ) {
         tracing::info!(
             player = format!("0x{:08X}", player_id),
@@ -2480,6 +2508,8 @@ impl PacketProcessor {
                 // Filled in by the spawn appliers as onCreate's spawns
                 // land; consumed by the ContentFinished teardown.
                 spawned_actor_ids: Vec::new(),
+                instance_id,
+                party_member: false,
             });
             // Re-arm the content-warp ack gate for THIS instance. The
             // field doc always promised "reset to false when a new
@@ -2506,6 +2536,8 @@ impl PacketProcessor {
             area_class_path: area_class_path.clone(),
             director_name: director_name.clone(),
             director_actor_id,
+            instance_id,
+            slot: crate::content_instance::get(instance_id).map_or(0, |i| i.slot),
             queue: placeholder_queue.clone(),
             // C2b — onCreate doesn't iterate area rosters; B1 will
             // populate them on subsequent onUpdate ticks via the
@@ -2584,6 +2616,7 @@ impl PacketProcessor {
                         expected_actor_id,
                         appearance_class_id,
                         display_name,
+                        instance_id,
                     } => {
                         crate::runtime::bnpc_spawn::spawn_battle_npc_as(
                             bnpc_id,
@@ -2592,6 +2625,7 @@ impl PacketProcessor {
                             None,
                             appearance_class_id,
                             display_name,
+                            instance_id,
                             &self.db,
                             &self.world,
                             &self.registry,
@@ -2608,6 +2642,7 @@ impl PacketProcessor {
                         z,
                         rotation,
                         expected_actor_id,
+                        instance_id,
                     } => {
                         // Content-area SpawnActor — needs db lookups
                         // (actor_class + appearance) that the runtime
@@ -2622,6 +2657,7 @@ impl PacketProcessor {
                             z,
                             rotation,
                             expected_actor_id,
+                            instance_id,
                         )
                         .await;
                     }
@@ -2809,6 +2845,7 @@ impl PacketProcessor {
         z: f32,
         rotation: f32,
         expected_actor_id: u32,
+        instance_id: u32,
     ) {
         // 1. Resolve the actor class row — required for the
         //    AddActor + ScriptBind bundle.
@@ -2911,6 +2948,7 @@ impl PacketProcessor {
                 },
                 &mut ob,
             );
+            zone.core.set_instance(actor_id, instance_id);
         }
 
         // 6. Register the live Character in the ActorRegistry.
@@ -2933,6 +2971,8 @@ impl PacketProcessor {
         for mut snap in self.world.all_sessions().await {
             if let Some(active) = snap.active_content_script.as_mut()
                 && active.parent_zone_id == zone_id
+                && (instance_id == 0 || active.instance_id == instance_id)
+                && !active.party_member
             {
                 if !active.spawned_actor_ids.contains(&actor_id) {
                     active.spawned_actor_ids.push(actor_id);
@@ -3056,7 +3096,98 @@ impl PacketProcessor {
     /// the same parent-zone scope, which matches Yda/Papalymo's existing
     /// positions until the proper instance subsystem lands.
     #[allow(clippy::too_many_arguments)]
+    /// `DoZoneChangeContent`, and for `with_party` the party members in the
+    /// player's zone after them: each enters the same copy, carrying a
+    /// member's view of the owner's content state (`party_member`) so the
+    /// copy's actors stream to them while its hooks keep running once.
+    #[allow(clippy::too_many_arguments)]
     async fn apply_do_zone_change_content(
+        &self,
+        player_id: u32,
+        parent_zone_id: u32,
+        area_name: String,
+        director_actor_id: u32,
+        spawn_type: u8,
+        x: f32,
+        y: f32,
+        z: f32,
+        rotation: f32,
+        instance_id: u32,
+        with_party: bool,
+    ) {
+        // Who comes along: party members standing in the leader's zone
+        // before the warp (by the entrance), online.
+        let mut members: Vec<(u32, u32)> = Vec::new();
+        if with_party && instance_id != 0 {
+            let from_zone = match self.registry.get(player_id).await {
+                Some(h) => h.character.read().await.base.zone_id,
+                None => 0,
+            };
+            for m in crate::parties::others(player_id) {
+                if let Some(h) = self.registry.get(m).await
+                    && h.is_player()
+                    && h.session_id != 0
+                    && h.character.read().await.base.zone_id == from_zone
+                {
+                    members.push((m, h.session_id));
+                }
+            }
+        }
+        self.apply_do_zone_change_content_one(
+            player_id,
+            parent_zone_id,
+            area_name.clone(),
+            director_actor_id,
+            spawn_type,
+            x,
+            y,
+            z,
+            rotation,
+            instance_id,
+        )
+        .await;
+        if members.is_empty() {
+            return;
+        }
+        let owner_active = match self.registry.get(player_id).await {
+            Some(h) => self
+                .world
+                .session(h.session_id)
+                .await
+                .and_then(|s| s.active_content_script),
+            None => None,
+        };
+        let Some(owner_active) = owner_active.filter(|a| a.instance_id == instance_id) else {
+            return;
+        };
+        for (member_id, session_id) in members {
+            if let Some(mut snap) = self.world.session(session_id).await {
+                snap.active_content_script = Some(crate::data::ActiveContentScript {
+                    spawned_actor_ids: Vec::new(),
+                    party_member: true,
+                    ..owner_active.clone()
+                });
+                snap.content_warp_acked = false;
+                self.world.upsert_session(snap).await;
+            }
+            self.apply_do_zone_change_content_one(
+                member_id,
+                parent_zone_id,
+                area_name.clone(),
+                director_actor_id,
+                spawn_type,
+                x,
+                y,
+                z,
+                rotation,
+                instance_id,
+            )
+            .await;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_do_zone_change_content_one(
         &self,
         player_id: u32,
         parent_zone_id: u32,
@@ -3070,6 +3201,7 @@ impl PacketProcessor {
         y: f32,
         z: f32,
         rotation: f32,
+        instance_id: u32,
     ) {
         let Some(handle) = self.registry.get(player_id).await else {
             tracing::warn!(player = player_id, "DoZoneChangeContent: actor missing");
@@ -3170,6 +3302,9 @@ impl PacketProcessor {
             let mut zw = zone_arc.write().await;
             let mut ob = crate::zone::outbox::AreaOutbox::new();
             zw.core.update_actor_position(actor_id, spawn, &mut ob);
+            // Into the copy: from here the player only meets its actors and
+            // the party members who entered with them.
+            zw.core.set_instance(actor_id, instance_id);
         }
 
         // Rebind the player's REGISTRY handle zone to the content zone.
@@ -3566,6 +3701,8 @@ impl PacketProcessor {
                     area_class_path: active.area_class_path.clone(),
                     director_name: active.director_name.clone(),
                     director_actor_id: active.director_actor_id,
+                    instance_id: active.instance_id,
+                    slot: crate::content_instance::get(active.instance_id).map_or(0, |i| i.slot),
                     queue: placeholder_queue.clone(),
                     // C2b — onZoneIn doesn't iterate area rosters
                     // (onUpdate does, via the ticker path).

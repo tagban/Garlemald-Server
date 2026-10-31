@@ -922,11 +922,24 @@ pub async fn apply_runtime_lua_command(
             .await;
             true
         }
+        LC::LeaveContent { player_id } => {
+            apply_leave_content(player_id, registry, world, lua).await;
+            true
+        }
         LC::ContentFinished {
             parent_zone_id,
             area_name,
+            instance_id,
         } => {
-            apply_content_finished(parent_zone_id, &area_name, registry, world, lua).await;
+            apply_content_finished(
+                parent_zone_id,
+                &area_name,
+                instance_id,
+                registry,
+                world,
+                lua,
+            )
+            .await;
             true
         }
         // DoEmote reaches the runtime drain when a *command* script emits it —
@@ -2090,17 +2103,21 @@ async fn apply_kick_event(
 pub(crate) async fn apply_content_finished(
     parent_zone_id: u32,
     area_name: &str,
+    instance_id: u32,
     registry: &ActorRegistry,
     world: &WorldManager,
     lua: Option<&Arc<LuaEngine>>,
 ) {
-    // 1. Owning session — the one whose active content matches this
-    //    parent zone (+ area name when the caller knew it).
+    // 1. Owning session — the one running this copy when the caller knew
+    //    it, else the one whose active content matches this parent zone
+    //    (+ area name when the caller knew that).
     let mut owner: Option<crate::data::Session> = None;
     for snap in world.all_sessions().await {
         if let Some(active) = snap.active_content_script.as_ref()
             && active.parent_zone_id == parent_zone_id
             && (area_name.is_empty() || active.area_name == area_name)
+            && (instance_id == 0 || active.instance_id == instance_id)
+            && !active.party_member
         {
             owner = Some(snap);
             break;
@@ -2143,6 +2160,24 @@ pub(crate) async fn apply_content_finished(
     let despawn_count = despawn.len();
     for actor_id in despawn {
         apply_despawn_actor(parent_zone_id, actor_id, registry, world).await;
+    }
+    // The copy is over: free its slot, and drop the members' views of it.
+    // Its players keep their tag until they warp out (the zone change
+    // clears it).
+    crate::content_instance::release(active.instance_id);
+    if active.instance_id != 0 {
+        for mut member in world.all_sessions().await {
+            if member.id != session_id
+                && member
+                    .active_content_script
+                    .as_ref()
+                    .is_some_and(|a| a.instance_id == active.instance_id)
+            {
+                member.active_content_script = None;
+                member.pending_content_kick_event = None;
+                world.upsert_session(member).await;
+            }
+        }
     }
 
     // 3 + 4. Roster + content-script clears. The content director was
@@ -2213,6 +2248,82 @@ pub(crate) async fn apply_content_finished(
         purged_coroutines = purged,
         "ContentFinished applied (full teardown)",
     );
+}
+
+/// A player leaving a content copy (walking out, warping away, logging
+/// off). A party member just drops their view of it. The owner hands the
+/// copy to a member still inside (its hooks and spawns move with it), or,
+/// when nobody is left, the copy finishes (`apply_content_finished`).
+pub(crate) async fn apply_leave_content(
+    player_id: u32,
+    registry: &ActorRegistry,
+    world: &WorldManager,
+    lua: Option<&Arc<LuaEngine>>,
+) {
+    let Some(handle) = registry.get(player_id).await else {
+        return;
+    };
+    let Some(mut snap) = world.session(handle.session_id).await else {
+        return;
+    };
+    let Some(active) = snap.active_content_script.clone() else {
+        return;
+    };
+    if active.instance_id == 0 {
+        // Untracked content (no slot was free): the old single-owner path.
+        apply_content_finished(
+            active.parent_zone_id,
+            &active.area_name,
+            0,
+            registry,
+            world,
+            lua,
+        )
+        .await;
+        return;
+    }
+    if active.party_member {
+        snap.active_content_script = None;
+        snap.pending_content_kick_event = None;
+        world.upsert_session(snap).await;
+        return;
+    }
+    let heir = world.all_sessions().await.into_iter().find(|m| {
+        m.id != snap.id
+            && m.active_content_script
+                .as_ref()
+                .is_some_and(|a| a.instance_id == active.instance_id)
+    });
+    match heir {
+        Some(mut heir) => {
+            if let Some(a) = heir.active_content_script.as_mut() {
+                a.party_member = false;
+                a.spawned_actor_ids = active.spawned_actor_ids.clone();
+            }
+            let heir_id = heir.id;
+            world.upsert_session(heir).await;
+            snap.active_content_script = None;
+            snap.pending_content_kick_event = None;
+            world.upsert_session(snap).await;
+            tracing::info!(
+                instance = active.instance_id,
+                from = handle.session_id,
+                to = heir_id,
+                "content copy handed to a party member still inside",
+            );
+        }
+        None => {
+            apply_content_finished(
+                active.parent_zone_id,
+                &active.area_name,
+                active.instance_id,
+                registry,
+                world,
+                lua,
+            )
+            .await;
+        }
+    }
 }
 
 /// B3 of the SEQ_005 unblock plan — port of C# `Chara::SetMod`.
@@ -8532,6 +8643,8 @@ mod end_event_before_warp_tests {
             y: 61.71,
             z: -1120.79,
             rotation: 0.0,
+            instance_id: 0,
+            with_party: false,
         }
     }
 

@@ -125,6 +125,12 @@ pub struct AreaCore {
 
     pub actors: HashMap<u32, StoredActor>,
     grid: Vec<Vec<u32>>,
+    /// Content instance each actor belongs to (absent = the open zone).
+    /// Several copies of one content (a dungeon run per party) share the
+    /// zone's pool at the same coordinates; range queries only ever pair
+    /// actors of the same instance. Kept beside the rows rather than in
+    /// `StoredActor` so the many re-adds on warps don't drop the tag.
+    instances: HashMap<u32, u32>,
 
     /// Generic directors keyed by composite actor id
     /// (`6 << 28 | zone << 19 | local`).
@@ -181,6 +187,7 @@ impl AreaCore {
             bgm_battle,
             actors: HashMap::new(),
             grid: vec![Vec::new(); grid_cells],
+            instances: HashMap::new(),
             directors: HashMap::new(),
             guildleve_directors: HashMap::new(),
             next_director_id: 1,
@@ -374,11 +381,16 @@ impl AreaCore {
         });
     }
 
-    /// `RemoveActorFromZone`.
+    /// `RemoveActorFromZone`. A non-player leaves its instance with it;
+    /// players keep theirs across the remove/re-add of a warp (the zone
+    /// change sets or clears it).
     pub fn remove_actor(&mut self, actor_id: u32, outbox: &mut AreaOutbox) -> bool {
         let Some(prev) = self.actors.remove(&actor_id) else {
             return false;
         };
+        if prev.kind != ActorKind::Player {
+            self.instances.remove(&actor_id);
+        }
         if let Some(pos) = self.cell(prev.grid).iter().position(|&id| id == actor_id) {
             self.cell_mut(prev.grid).remove(pos);
         }
@@ -421,6 +433,20 @@ impl AreaCore {
             old_grid: old_cell,
             new_grid: new_cell,
         });
+    }
+
+    /// Put an actor in a content instance (`0` = back in the open zone).
+    pub fn set_instance(&mut self, actor_id: u32, instance_id: u32) {
+        if instance_id == 0 {
+            self.instances.remove(&actor_id);
+        } else {
+            self.instances.insert(actor_id, instance_id);
+        }
+    }
+
+    /// The content instance an actor is in (`0` = the open zone).
+    pub fn instance_of(&self, actor_id: u32) -> u32 {
+        self.instances.get(&actor_id).copied().unwrap_or(0)
     }
 
     /// Update alive/dead without moving.
@@ -479,14 +505,15 @@ impl AreaCore {
     // Range queries — the heart of battle / visibility integration.
     // -----------------------------------------------------------------
 
-    /// `GetActorsAroundPoint(x, z, checkDistance)`.
+    /// `GetActorsAroundPoint(x, z, checkDistance)`: open-zone actors only.
     pub fn actors_around_point(&self, x: f32, z: f32, check_distance: f32) -> Vec<StoredActor> {
         let radius_cells = ((check_distance / BOUNDING_GRID_SIZE as f32).ceil() as i32).max(0);
         let (gx, gy) = Self::pos_to_grid(x, z);
-        self.collect_actors_in_cells(gx, gy, radius_cells, None)
+        self.collect_actors_in_cells(gx, gy, radius_cells, None, 0)
     }
 
-    /// `GetActorsAroundActor(actor, checkDistance)`.
+    /// `GetActorsAroundActor(actor, checkDistance)`: only actors in the
+    /// center's own instance (or the open zone, for an open-zone center).
     pub fn actors_around(&self, center_actor_id: u32, check_distance: f32) -> Vec<StoredActor> {
         let Some(center) = self.actors.get(&center_actor_id) else {
             return Vec::new();
@@ -497,6 +524,7 @@ impl AreaCore {
             center.grid.1,
             radius_cells,
             Some(center_actor_id),
+            self.instance_of(center_actor_id),
         )
     }
 
@@ -520,6 +548,7 @@ impl AreaCore {
         gy: i32,
         radius_cells: i32,
         exclude_actor_id: Option<u32>,
+        instance_id: u32,
     ) -> Vec<StoredActor> {
         let mut out = Vec::new();
         let y_min = (gy - radius_cells).max(0);
@@ -529,7 +558,7 @@ impl AreaCore {
         for y in y_min..=y_max {
             for x in x_min..=x_max {
                 for &id in self.cell((x, y)) {
-                    if Some(id) == exclude_actor_id {
+                    if Some(id) == exclude_actor_id || self.instance_of(id) != instance_id {
                         continue;
                     }
                     if let Some(a) = self.actors.get(&id) {
@@ -681,6 +710,65 @@ mod tests {
         let (gx, gy) = AreaCore::pos_to_grid(-99999.0, -99999.0);
         assert_eq!(gx, 0);
         assert_eq!(gy, 0);
+    }
+
+    #[test]
+    fn content_copies_only_see_their_own_actors() {
+        // Two copies of one dungeon at the same spot, plus the open zone.
+        let mut area = mk_area();
+        let mut ob = AreaOutbox::new();
+        for (id, kind, inst) in [
+            (1, ActorKind::Player, 7),
+            (2, ActorKind::BattleNpc, 7),
+            (3, ActorKind::Player, 8),
+            (4, ActorKind::BattleNpc, 8),
+            (5, ActorKind::Player, 0),
+            (6, ActorKind::BattleNpc, 0),
+        ] {
+            area.core.add_actor(actor(id, 10.0, 10.0, kind), &mut ob);
+            area.core.set_instance(id, inst);
+        }
+        let ids = |c: u32| {
+            let mut v: Vec<u32> = area
+                .core
+                .actors_around(c, 50.0)
+                .iter()
+                .map(|a| a.actor_id)
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(ids(1), vec![2]);
+        assert_eq!(ids(3), vec![4]);
+        assert_eq!(ids(5), vec![6]);
+        assert_eq!(ids(2), vec![1]);
+        // The point query is the open zone's.
+        let mut open: Vec<u32> = area
+            .core
+            .actors_around_point(10.0, 10.0, 50.0)
+            .iter()
+            .map(|a| a.actor_id)
+            .collect();
+        open.sort();
+        assert_eq!(open, vec![5, 6]);
+    }
+
+    #[test]
+    fn a_player_keeps_its_copy_across_a_warp_but_a_despawned_mob_does_not() {
+        let mut area = mk_area();
+        let mut ob = AreaOutbox::new();
+        area.core
+            .add_actor(actor(1, 0.0, 0.0, ActorKind::Player), &mut ob);
+        area.core
+            .add_actor(actor(2, 0.0, 0.0, ActorKind::BattleNpc), &mut ob);
+        area.core.set_instance(1, 9);
+        area.core.set_instance(2, 9);
+        area.core.remove_actor(1, &mut ob);
+        area.core.remove_actor(2, &mut ob);
+        assert_eq!(area.core.instance_of(1), 9);
+        assert_eq!(area.core.instance_of(2), 0);
+        area.core.set_instance(1, 0);
+        assert_eq!(area.core.instance_of(1), 0);
     }
 
     #[test]
