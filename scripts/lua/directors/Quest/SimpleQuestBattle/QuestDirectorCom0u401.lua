@@ -3,8 +3,9 @@ require ("modifiers")
 require ("quests/com/com0u4")
 
 -- Arms Race's fight with the Hellhounds near the Golden Bazaar (content
--- SimpleContentCom0u401). The duty is entered in place, so the entry kick is
--- simply closed. Once the Hellhounds fall the quest sends you back to Aubrey.
+-- SimpleContentCom0u401). The duty is entered in place, but the entry kick
+-- still raises the loading veil, so it is lifted and the kick closed. Once
+-- the Hellhounds fall the quest sends you back to Aubrey.
 
 function init()
 	return "/Director/Quest/SimpleQuestBattle/QuestDirectorCom0u401";
@@ -14,6 +15,10 @@ function onEventStarted(player, actor, triggerName)
 	-- By id: GetQuest resolves names only for the opening quests.
 	local quest = player:GetQuest(111804);
 
+	-- The entry kick raises the Now Loading veil even in place (the screen
+	-- dims, a spinner turns, and no command or talk starts until it's
+	-- lifted); questBaseRewardSeting is the client's call that lifts it.
+	callClientFunction(player, "delegateEvent", player, quest, "questBaseRewardSeting");
 	player:EndEvent();
 
 	-- A duty that ends any other way purges this coroutine with the content.
