@@ -20,9 +20,9 @@ invites you to the ceremony; Zanthael takes you up the lift to the Bridge
 Archons, the Allseer, and the road to Gridania and Ul'dah.
 
 The client script (com0l5) names the events; seed 127 holds the cast, the
-clearing trigger and the brigands. The Bridge is a private layout
-(prv_s0_hal01) the server can't load yet, so the gathering after the
-ceremony stands in Maelstrom Command.
+clearing trigger and the brigands. The Bridge (private layout prv_s0_hal01)
+has no geometry of its own: it dresses the Maelstrom Command room (mlt01), so
+the gathering after the ceremony stands in Maelstrom Command.
 
 ]]
 
