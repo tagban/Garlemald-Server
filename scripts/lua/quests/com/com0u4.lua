@@ -130,7 +130,7 @@ function onTalk(player, quest, npc)
 	elseif (sequence == SEQ_050 and classId == AUBREY) then
 		-- the contracts, the demilitarized road, and Lolorito's peace
 		callClientFunction(player, "delegateEvent", player, quest, "processEvent_050");
-		callClientFunction(player, "delegateEvent", player, quest, "sqrwa", REWARD_EXP, 1, 1, 2);
+		callClientFunction(player, "delegateEvent", player, quest, "sqrwa", REWARD_EXP, 1, 1, 5);
 		local keyItems = player:GetItemPackage(INVENTORY_KEYITEMS);
 		for _, d in pairs(DEALERS) do
 			keyItems:RemoveItem(d[1], 1);

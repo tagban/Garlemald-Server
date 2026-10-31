@@ -49,9 +49,9 @@ CLEARING				= 1090327;
 CLEARING_ROAD			= {130, 1043.0, 70.0, -850.0, -1.57};
 MAELSTROM_HALL			= {232, 163.0, 0.0, -178.0, -1.57};
 
--- Rewards (as Com0x4)
+-- Rewards (the client's reward sheet row: an EXP tier in slot 1, seals in slot 5)
 REWARD_EXP				= 1541;
-REWARD_SEALS			= 500;
+REWARD_SEALS			= 300;
 COMPANY					= 1;
 
 -- The gathering after the ceremony: each bystander's talk.
@@ -127,7 +127,7 @@ function onTalk(player, quest, npc)
 	elseif (sequence == SEQ_015 and classId == THANCRED) then
 		-- the Archons, the Allseer, and the road east
 		callClientFunction(player, "delegateEvent", player, quest, "processEvent_015");
-		callClientFunction(player, "delegateEvent", player, quest, "sqrwa", REWARD_EXP, 1, 1, 2);
+		callClientFunction(player, "delegateEvent", player, quest, "sqrwa", REWARD_EXP, 1, 1, 5);
 		player:AddExp(REWARD_EXP, player.charaWork.parameterSave.state_mainSkill[0], 0);
 		player:AddSeals(COMPANY, REWARD_SEALS);
 		player:EndEvent();
