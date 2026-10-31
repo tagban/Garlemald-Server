@@ -28,6 +28,8 @@ endevent = 2
 zone = 2
 camp = 2
 warp = 2
+# entering a 1.0 dungeon in your own copy, until its queue NPCs are scripted
+dungeon = 2
 home = 2
 revive = 2
 speed = 2

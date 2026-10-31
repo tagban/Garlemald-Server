@@ -59,6 +59,7 @@ use crate::social::{
 use crate::world_manager::WorldManager;
 
 mod equip;
+mod dungeon;
 pub(crate) mod gm_spawn;
 mod items;
 mod quest_offers;
@@ -10064,6 +10065,11 @@ impl PacketProcessor {
                 && level >= crate::command_permissions::get().required("bug")
             {
                 Some(crate::bug_report::file(&self.db, &handle, session_id, note).await)
+            } else if let Some(r) = self.dungeon_command(&handle, &line, level).await {
+                Some(match r {
+                    Ok(m) => (ChatKind::System, m),
+                    Err(m) => (ChatKind::SystemError, m),
+                })
             } else if let Some(r) = self.gm_spawn_command(&handle, &line, level).await {
                 Some(match r {
                     Ok(m) => (ChatKind::System, m),
