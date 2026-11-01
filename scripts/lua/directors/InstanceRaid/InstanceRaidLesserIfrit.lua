@@ -15,8 +15,8 @@ TIME_LIMIT		= 30;		-- minutes, as the briefing tells it
 
 local function ifritQuest(player)
 	for _, id in ipairs(IT_KILLS_WITH_FIRE) do
-		local quest = player:GetQuest(id);
-		if quest ~= nil then return quest end
+		-- GetQuest hands back a quest for any id, held or not
+		if player:HasQuest(id) then return player:GetQuest(id) end
 	end
 end
 
