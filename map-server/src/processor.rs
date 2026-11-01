@@ -9424,8 +9424,11 @@ impl PacketProcessor {
         // onTalk ran first for Into the Dark's Darkhold guard and its
         // generic tail `player:EndEvent()` closed the talk, so the guard's
         // lines never showed and his "go in?" prompt answered at once.
-        // NPCs no quest registered keep the every-quest fan-out.
-        let active_quest_ids = if hook_name == "onTalk" {
+        // NPCs no quest registered keep the every-quest fan-out. Push
+        // triggers likewise: with man0 open, its onPush ended Deus ex
+        // Machina's Aleport trigger before the betrayal cut scene could
+        // play, and the duty started with no scene.
+        let active_quest_ids = if hook_name == "onTalk" || hook_name == "onPush" {
             let c = handle.character.read().await;
             let owners: Vec<u32> = c
                 .quest_journal
