@@ -52,6 +52,15 @@ DUNGEONS = {
 		entry = {2483.0, 248.3, 2194.0, 0.0},		-- the west edge of the Bowl, from cut scene GC010110
 		exit = {206, 14.0, 22.2, -1552.0, 0.0},		-- Apkallus Falls, Gridania
 	},
+	-- Garuda's battle for the Grand Companies' In for Garuda Wakening
+	-- (Gc?104), entered through the beastman aetheryte at the north-east tip
+	-- of Feathergorge, where you return after.
+	howling = {
+		zone = 239, name = "HowlingEye", content = "SimpleContentHowlingEye",
+		director = "InstanceRaid/InstanceRaidLesserGaruda",
+		entry = {1508.0, 302.0, -274.0, -1.16},	-- the bowl's east rim
+		exit = {143, 1027.0, 290.8, -137.0, 0.0},	-- Feathergorge, Coerthas Central Highlands
+	},
 }
 
 local function byZone(zoneId)
