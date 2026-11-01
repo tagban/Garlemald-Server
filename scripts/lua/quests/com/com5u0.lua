@@ -53,6 +53,10 @@ ENTRY_LEVEL				= 25;
 PARTY_MAX				= 4;
 TIME_LIMIT				= 60;		-- minutes, as Bloisirant tells it
 
+-- Kupcha Kupa remembers you if another company's Imperial Devices brought
+-- you to him first.
+OTHER_IMPERIAL_DEVICES	= {111410, 111610};
+
 -- Quest flags
 FLAG_HEARD_BLOISIRANT	= 0;		-- his after-word, once
 
@@ -137,7 +141,8 @@ function onTalk(player, quest, npc)
 		end
 	elseif (sequence == SEQ_010 and classId == KUPCHA_KUPA) then
 		-- the dead Flames, the voice, and the piece of the device
-		callClientFunction(player, "delegateEvent", player, quest, "processEvent_015", 0);
+		local met = player:IsQuestCompleted(OTHER_IMPERIAL_DEVICES[1]) or player:IsQuestCompleted(OTHER_IMPERIAL_DEVICES[2]);
+		callClientFunction(player, "delegateEvent", player, quest, "processEvent_015", met and 1 or 0);
 		player:GetItemPackage(INVENTORY_KEYITEMS):AddItem(SHATTERED_GAUNTLET, 1, 1);
 		player:GetItemPackage(INVENTORY_KEYITEMS):AddItem(COOLING_PLATE, 1, 1);
 		quest:StartSequence(SEQ_015);
