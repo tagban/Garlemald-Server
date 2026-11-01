@@ -58,9 +58,11 @@ VESPER_BAY				= 1090330;
 VESPER_BAY_DOCKS		= {172, -1620.0, 59.5, 248.0, -1.57};
 LANDING					= {133, -440.0, 21.0, 179.0, 0.8};
 
--- The other companies' sixth missions: Cid's account changes with how many
--- of his talks you have heard.
-OTHER_SIXTH_MISSIONS	= {111606, 111806};
+-- The other companies' sixth missions: Cid's account depends on which of
+-- his talks there you have heard, 3 for neither, 1 or 2 for one, 4 for both
+-- (1, 2 and 4 all get "you've heard this before").
+CID_GRIDANIA			= 111606;
+CID_ULDAH				= 111806;
 
 -- Rewards (the client's reward sheet row: an EXP tier in slot 1, seals in slot 5)
 REWARD_EXP				= 1541;
@@ -146,11 +148,15 @@ function onTalk(player, quest, npc)
 		callClientFunction(player, "delegateEvent", player, quest, LANDING_CROWD[classId]);
 	elseif (sequence == SEQ_015 and classId == CID) then
 		-- Dalamud, the Empire's terminals, and the wind at the helm
-		local heard = 1;
-		for _, questId in ipairs(OTHER_SIXTH_MISSIONS) do
-			if (player:IsQuestCompleted(questId)) then
-				heard = heard + 1;
-			end
+		local heardGridania = player:IsQuestCompleted(CID_GRIDANIA);
+		local heardUldah = player:IsQuestCompleted(CID_ULDAH);
+		local heard = 3;
+		if (heardGridania and heardUldah) then
+			heard = 4;
+		elseif (heardGridania) then
+			heard = 1;
+		elseif (heardUldah) then
+			heard = 2;
 		end
 		callClientFunction(player, "delegateEvent", player, quest, "processEvent_015", heard);
 		callClientFunction(player, "delegateEvent", player, quest, "sqrwa", REWARD_EXP, 1, 1, 5);
