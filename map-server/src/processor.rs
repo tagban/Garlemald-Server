@@ -9419,6 +9419,27 @@ impl PacketProcessor {
             }
         }
 
+        // An NPC a current quest registered (`quest:SetENpc`) talks for
+        // that quest alone, as in Meteor. With Man200 open at SEQ_000, its
+        // onTalk ran first for Into the Dark's Darkhold guard and its
+        // generic tail `player:EndEvent()` closed the talk, so the guard's
+        // lines never showed and his "go in?" prompt answered at once.
+        // NPCs no quest registered keep the every-quest fan-out.
+        let active_quest_ids = if hook_name == "onTalk" {
+            let c = handle.character.read().await;
+            let owners: Vec<u32> = c
+                .quest_journal
+                .slots
+                .iter()
+                .flatten()
+                .filter(|q| q.state.current.contains_key(&npc_spec.actor_class_id))
+                .map(|q| q.quest_id())
+                .collect();
+            if owners.is_empty() { active_quest_ids } else { owners }
+        } else {
+            active_quest_ids
+        };
+
         for quest_id in active_quest_ids {
             // Pass the eventName as the hook's trailing arg —
             // `onEmote(player, quest, npc, eventName)` /
