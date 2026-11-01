@@ -59,11 +59,11 @@ INSERT OR IGNORE INTO "server_spawn_locations"
      "positionX", "positionY", "positionZ", "rotation", "actorState", "animationId", "customDisplayName")
 VALUES
     (27726, 1090328, 'com0u5_ferry_docks',            172, '', 0, -1620.00,  59.50,  248.00,  0.00, 0, 0, null),
-    (27727, 1000185, 'com0u5_thancred_docks',         172, '', 0, -1614.00,  59.30,  249.00, -1.57, 0, 0, null),
-    (27728, 1500204, 'com0u5_urianger_docks',         172, '', 0, -1614.00,  59.30,  245.00, -1.57, 0, 0, null),
-    (27729, 1001931, 'com0u5_flame_captain',          172, '', 0, -1626.00,  61.00,  244.00,  1.57, 0, 0, null),
-    (27730, 1000985, 'com0u5_bonny_lass',             172, '', 0, -1624.00,  61.00,  254.00,  1.57, 0, 0, null),
-    (27731, 1000937, 'com0u5_greedy_merchant',        172, '', 0, -1618.00,  60.20,  255.00,  3.14, 0, 0, null),
+    (27727, 1000185, 'com0u5_thancred_docks',         172, '', 0, -1614.00,  58.70,  248.50, -1.57, 0, 0, null),
+    (27728, 1500204, 'com0u5_urianger_docks',         172, '', 0, -1614.10,  57.95,  244.50, -1.57, 0, 0, null),
+    (27729, 1001931, 'com0u5_flame_captain',          172, '', 0, -1622.35,  58.35,  243.00,  1.57, 0, 0, null),
+    (27730, 1000985, 'com0u5_bonny_lass',             172, '', 0, -1619.60,  60.15,  253.50,  1.57, 0, 0, null),
+    (27731, 1000937, 'com0u5_greedy_merchant',        172, '', 0, -1618.00,  60.35,  254.50,  3.14, 0, 0, null),
     (27732, 1090329, 'com0u5_royal_promenade',        209, '', 0,  -104.00, 222.30,  199.00,  0.00, 0, 0, null),
     (27733, 1000185, 'com0u5_thancred_promenade',     209, '', 0,  -104.00, 223.30,  205.00,  3.14, 0, 0, null),
     (27734, 1000253, 'com0u5_tittering_traveler',     209, '', 0,  -108.50, 223.00,  202.00,  0.00, 0, 0, null),
