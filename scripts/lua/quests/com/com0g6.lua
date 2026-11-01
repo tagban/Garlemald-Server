@@ -137,7 +137,7 @@ function onTalk(player, quest, npc)
 		callClientFunction(player, "delegateEvent", player, quest, "processEventLewinAfter");
 	elseif (sequence == SEQ_020 and classId == CID) then
 		-- what Arthur saw, the new legatus, and the hearts of Gridanians
-		callClientFunction(player, "delegateEvent", player, quest, "processEventClear", cidHeard(player, CID_LIMSA, CID_ULDAH));
+		callClientFunction(player, "delegateEvent", player, quest, "processEventClear", cidHeard(player, CID_ULDAH, CID_LIMSA));
 		callClientFunction(player, "delegateEvent", player, quest, "sqrwa", REWARD_EXP, 1, 1, 5);
 		player:AddExp(REWARD_EXP, player.charaWork.parameterSave.state_mainSkill[0], 0);
 		player:AddSeals(COMPANY, REWARD_SEALS);
