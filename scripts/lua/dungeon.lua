@@ -43,6 +43,15 @@ DUNGEONS = {
 		entry = {-1402.0, 252.2, -1455.0, 0.0},	-- the first chamber
 		exit = {173, -710.0, 280.4, -2208.0, 0.0},	-- Cutter's Pass, Northern Thanalan
 	},
+	-- Not a dungeon: Ifrit's battle for the Grand Companies' It Kills with
+	-- Fire (Gc?101), entered through Louisoix's aetherial gate at Apkallus
+	-- Falls, where his magicks bring you back after.
+	embers = {
+		zone = 240, name = "BowlOfEmbers", content = "SimpleContentBowlOfEmbers",
+		director = "InstanceRaid/InstanceRaidLesserIfrit",
+		entry = {2483.0, 248.3, 2194.0, 0.0},		-- the west edge of the Bowl, from cut scene GC010110
+		exit = {206, 14.0, 22.2, -1552.0, 0.0},		-- Apkallus Falls, Gridania
+	},
 }
 
 local function byZone(zoneId)
